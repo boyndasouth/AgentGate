@@ -1,0 +1,54 @@
+# Seed tuples for the demo. Single source of truth:
+# used by tests.fga.yaml (tuple_file) and by scripts/load_store.py.
+
+# --- Owners: every agent is a real identity with a human owner ---
+- user: user:shiwin
+  relation: owner
+  object: agent:researcher
+- user: user:shiwin
+  relation: owner
+  object: agent:mailer
+- user: user:shiwin
+  relation: owner
+  object: agent:finance
+
+# --- Approvers: who answers the Slack escalations ---
+- user: user:shiwin
+  relation: approver
+  object: tool:send_email
+- user: user:shiwin
+  relation: approver
+  object: tool:transfer_funds
+
+# --- researcher: browses freely (browsing taints the session) ---
+- user: agent:researcher
+  relation: direct_invoker
+  object: tool:read_web
+
+# --- mailer: reads inbox and customers; sends freely only in a clean session ---
+- user: agent:mailer
+  relation: direct_invoker
+  object: tool:read_inbox
+- user: agent:mailer
+  relation: direct_invoker
+  object: tool:query_customers
+- user: agent:mailer
+  relation: direct_invoker
+  object: tool:send_email
+  condition:
+    name: untainted
+- user: agent:mailer
+  relation: approval_invoker
+  object: tool:send_email
+
+# --- finance: pays small invoices alone in a clean session; otherwise a human decides ---
+- user: agent:finance
+  relation: direct_invoker
+  object: tool:transfer_funds
+  condition:
+    name: within_limit_untainted
+    context:
+      max_amount: 100
+- user: agent:finance
+  relation: approval_invoker
+  object: tool:transfer_funds

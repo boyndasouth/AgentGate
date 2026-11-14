@@ -47,6 +47,7 @@ services:
       OPENFGA_DATASTORE_MAX_OPEN_CONNS: "50"
       OPENFGA_PLAYGROUND_ENABLED: "true"   # TODO: disable in the Render deploy (Day 3)
       OPENFGA_LOG_FORMAT: json
+      OPENFGA_PLAYGROUND_ADDR: ":3000"
     ports:
       - "8080:8080"   # HTTP API
       - "8081:8081"   # gRPC API

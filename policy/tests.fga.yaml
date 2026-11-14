@@ -1,0 +1,138 @@
+# Run:  fga model test --tests tests.fga.yaml
+# Outcome mapping used by the broker:
+#   allow    = can_invoke: true
+#   escalate = can_invoke: false, can_request_approval: true
+#   deny     = can_invoke: false, can_request_approval: false
+# Every check sends both amount and session_tainted, as the broker will.
+
+name: AgentGate
+model_file: ./model.fga
+tuple_file: ./tuples.yaml
+
+tests:
+  - name: researcher
+    description: Browses freely, even when tainted; never touches money, email or customer data.
+    check:
+      # ALLOW: read_web in a clean session
+      - user: agent:researcher
+        object: tool:read_web
+        context: {amount: 0, session_tainted: false}
+        assertions: {can_invoke: true, can_request_approval: true}
+      # ALLOW: read_web stays allowed after the session is tainted
+      - user: agent:researcher
+        object: tool:read_web
+        context: {amount: 0, session_tainted: true}
+        assertions: {can_invoke: true, can_request_approval: true}
+      # DENY: transfer_funds, even a tiny amount
+      - user: agent:researcher
+        object: tool:transfer_funds
+        context: {amount: 1, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: false}
+      # DENY: send_email
+      - user: agent:researcher
+        object: tool:send_email
+        context: {amount: 0, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: false}
+      # DENY: query_customers
+      - user: agent:researcher
+        object: tool:query_customers
+        context: {amount: 0, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: false}
+
+  - name: mailer
+    description: Sends email alone only in a clean session; tainted sends need a human.
+    check:
+      # ALLOW: send_email in a clean session
+      - user: agent:mailer
+        object: tool:send_email
+        context: {amount: 0, session_tainted: false}
+        assertions: {can_invoke: true, can_request_approval: true}
+      # ESCALATE: send_email after reading untrusted content (the injection demo)
+      - user: agent:mailer
+        object: tool:send_email
+        context: {amount: 0, session_tainted: true}
+        assertions: {can_invoke: false, can_request_approval: true}
+      # ALLOW: reading inbox and customers is not gated by taint (egress is the control point)
+      - user: agent:mailer
+        object: tool:read_inbox
+        context: {amount: 0, session_tainted: true}
+        assertions: {can_invoke: true, can_request_approval: true}
+      - user: agent:mailer
+        object: tool:query_customers
+        context: {amount: 0, session_tainted: true}
+        assertions: {can_invoke: true, can_request_approval: true}
+      # DENY: transfer_funds
+      - user: agent:mailer
+        object: tool:transfer_funds
+        context: {amount: 40, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: false}
+      # DENY: read_web
+      - user: agent:mailer
+        object: tool:read_web
+        context: {amount: 0, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: false}
+    list_objects:
+      # Clean session: every mailer tool is direct
+      - user: agent:mailer
+        type: tool
+        context: {amount: 0, session_tainted: false}
+        assertions:
+          can_invoke: [tool:query_customers, tool:read_inbox, tool:send_email]
+      # Tainted session: send_email drops out of direct access
+      - user: agent:mailer
+        type: tool
+        context: {amount: 0, session_tainted: true}
+        assertions:
+          can_invoke: [tool:query_customers, tool:read_inbox]
+
+  - name: finance
+    description: Pays up to $100 alone in a clean session; anything larger, or any tainted payment, needs a human.
+    check:
+      # ALLOW: the $40 invoice from the demo
+      - user: agent:finance
+        object: tool:transfer_funds
+        context: {amount: 40, session_tainted: false}
+        assertions: {can_invoke: true, can_request_approval: true}
+      # ALLOW: exactly at the limit
+      - user: agent:finance
+        object: tool:transfer_funds
+        context: {amount: 100, session_tainted: false}
+        assertions: {can_invoke: true, can_request_approval: true}
+      # ESCALATE: one cent over the limit
+      - user: agent:finance
+        object: tool:transfer_funds
+        context: {amount: 100.01, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: true}
+      # ESCALATE: the $5,000 transfer from the demo
+      - user: agent:finance
+        object: tool:transfer_funds
+        context: {amount: 5000, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: true}
+      # ESCALATE: a small amount, but the session is tainted
+      - user: agent:finance
+        object: tool:transfer_funds
+        context: {amount: 40, session_tainted: true}
+        assertions: {can_invoke: false, can_request_approval: true}
+      # DENY: send_email
+      - user: agent:finance
+        object: tool:send_email
+        context: {amount: 0, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: false}
+      # DENY: read_web
+      - user: agent:finance
+        object: tool:read_web
+        context: {amount: 0, session_tainted: false}
+        assertions: {can_invoke: false, can_request_approval: false}
+
+  - name: owners-and-approvers
+    description: Every agent has a human owner; only listed humans approve escalations.
+    check:
+      - user: user:shiwin
+        object: agent:finance
+        assertions: {owner: true}
+      - user: user:shiwin
+        object: tool:transfer_funds
+        assertions: {approver: true}
+      - user: user:mallory
+        object: tool:transfer_funds
+        assertions: {approver: false}

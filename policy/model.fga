@@ -1,0 +1,24 @@
+model
+  schema 1.1
+
+type user
+
+type agent
+  relations
+    define owner: [user]
+
+type tool
+  relations
+    define direct_invoker: [agent, agent with within_limit, agent with untainted]
+    define approval_invoker: [agent]
+    define approver: [user]
+    define can_invoke: direct_invoker
+    define can_request_approval: approval_invoker or direct_invoker
+
+condition within_limit(amount: double, max_amount: double) {
+  amount <= max_amount
+}
+
+condition untainted(session_tainted: bool) {
+  !session_tainted
+}

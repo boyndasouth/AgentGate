@@ -1,0 +1,103 @@
+# AgentGate local stack (Day 0)
+#   docker compose up -d
+#   OpenFGA HTTP API  -> http://localhost:8080
+#   OpenFGA gRPC      -> localhost:8081
+#   OpenFGA Playground-> http://localhost:3000/playground   (local dev only)
+#   Broker Postgres   -> localhost:5433  (user/db from .env)
+#
+# Named volumes (not bind mounts) keep Postgres data inside Docker, which
+# avoids OneDrive/Windows file-sync issues.
+
+name: agentgate
+
+services:
+  # --- OpenFGA's own datastore -------------------------------------------
+  fga-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${FGA_DB_USER:-openfga}
+      POSTGRES_PASSWORD: ${FGA_DB_PASSWORD:-openfga}
+      POSTGRES_DB: ${FGA_DB_NAME:-openfga}
+    volumes:
+      - fga_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FGA_DB_USER:-openfga} -d ${FGA_DB_NAME:-openfga}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not exposed to the host: only OpenFGA talks to it.
+
+  # Creates/upgrades OpenFGA's tables, then exits.
+  fga-migrate:
+    image: openfga/openfga:${OPENFGA_VERSION:-latest}
+    command: migrate
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${FGA_DB_USER:-openfga}:${FGA_DB_PASSWORD:-openfga}@fga-postgres:5432/${FGA_DB_NAME:-openfga}?sslmode=disable
+    depends_on:
+      fga-postgres:
+        condition: service_healthy
+
+  openfga:
+    image: openfga/openfga:${OPENFGA_VERSION:-latest}
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: postgres
+      OPENFGA_DATASTORE_URI: postgres://${FGA_DB_USER:-openfga}:${FGA_DB_PASSWORD:-openfga}@fga-postgres:5432/${FGA_DB_NAME:-openfga}?sslmode=disable
+      OPENFGA_DATASTORE_MAX_OPEN_CONNS: "50"
+      OPENFGA_PLAYGROUND_ENABLED: "true"   # TODO: disable in the Render deploy (Day 3)
+      OPENFGA_LOG_FORMAT: json
+    ports:
+      - "8080:8080"   # HTTP API
+      - "8081:8081"   # gRPC API
+      - "3000:3000"   # Playground (local only)
+    depends_on:
+      fga-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # The image ships grpc_health_probe; HTTP /healthz also works from the host.
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=localhost:8081"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # --- AgentGate broker's own database (agents, sessions, approvals, audit) --
+  # Locally this stands in for Supabase; on Day 3 the deployed broker
+  # points DATABASE_URL at Supabase instead.
+  broker-postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${BROKER_DB_USER:-agentgate}
+      POSTGRES_PASSWORD: ${BROKER_DB_PASSWORD:-agentgate}
+      POSTGRES_DB: ${BROKER_DB_NAME:-agentgate}
+    ports:
+      - "5433:5432"   # 5433 on the host so it won't clash with a local Postgres
+    volumes:
+      - broker_pgdata:/var/lib/postgresql/data
+      # Day 2: put schema.sql in db/init/ and it runs on first start of a fresh volume.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BROKER_DB_USER:-agentgate} -d ${BROKER_DB_NAME:-agentgate}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Day 2: uncomment once broker/Dockerfile exists.
+  # broker:
+  #   build: ./broker
+  #   env_file: .env
+  #   environment:
+  #     DATABASE_URL: postgresql://${BROKER_DB_USER:-agentgate}:${BROKER_DB_PASSWORD:-agentgate}@broker-postgres:5432/${BROKER_DB_NAME:-agentgate}
+  #     OPENFGA_API_URL: http://openfga:8080
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     openfga:
+  #       condition: service_healthy
+  #     broker-postgres:
+  #       condition: service_healthy
+
+volumes:
+  fga_pgdata:
+  broker_pgdata:

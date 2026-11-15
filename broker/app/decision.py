@@ -33,6 +33,7 @@ async def decide(
     token_scopes: frozenset[str],
     amount: float,
     session_tainted: bool,
+    tainted_by: str | None = None,
 ) -> Decision:
     if tool not in token_scopes:
         return Decision("deny", f"tool '{tool}' is outside this task's token scopes")
@@ -47,7 +48,7 @@ async def decide(
         if await fga.check(user, "can_request_approval", obj, context):
             why = []
             if session_tainted:
-                why.append("session is tainted")
+                why.append(f"session tainted by {tainted_by}" if tainted_by else "session is tainted")
             if amount:
                 why.append(f"amount {amount:g}")
             detail = f" ({', '.join(why)})" if why else ""

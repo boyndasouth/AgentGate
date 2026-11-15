@@ -66,6 +66,8 @@ class AgentToken:
     jti: str
     scopes: list[str]
     expires_at: str
+    session_tainted: bool = False      # Day 5: a reused session keeps its taint
+    tainted_by: str | None = None
 
 
 @dataclass
@@ -118,6 +120,7 @@ class GateClient:
         return AgentToken(
             access_token=d["access_token"], agent_id=d["agent_id"], session_id=d["session_id"],
             task_id=d["task_id"], jti=d["jti"], scopes=d["scopes"], expires_at=d["expires_at"],
+            session_tainted=bool(d.get("session_tainted", False)), tainted_by=d.get("tainted_by"),
         )
 
     async def call_tool(self, token: AgentToken, tool: str, args: dict[str, Any]) -> GateResult:

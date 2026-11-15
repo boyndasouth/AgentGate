@@ -20,12 +20,12 @@ from litestar import Litestar, Request, Response, asgi, get, post
 from litestar.connection import ASGIConnection
 from litestar.datastructures import State
 from litestar.di import Provide
-from litestar.exceptions import NotAuthorizedException, NotFoundException, PermissionDeniedException
+from litestar.exceptions import NotAuthorizedException, NotFoundException
 from litestar.handlers.base import BaseRouteHandler
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 
-from . import audit
+from . import audit, taint
 from .approvals import ApprovalError, ApprovalService, Approver, admin_view, agent_view
 from .config import load_settings
 from .db import create_pool
@@ -111,6 +111,8 @@ class TokenResponse(msgspec.Struct):
     task_id: str
     jti: str
     scopes: list[str]
+    session_tainted: bool = False     # Day 5: a reused session keeps its taint
+    tainted_by: str | None = None
 
 
 class RevokeTokenRequest(msgspec.Struct, forbid_unknown_fields=True):
@@ -162,6 +164,22 @@ async def audit_verify(conn: asyncpg.Connection) -> dict:
     return await audit.verify_chain(conn)
 
 
+@get("/audit/events", tags=["audit"], guards=[admin_guard], dependencies={"conn": Provide(provide_conn)},
+     security=[{"AdminKey": []}])
+async def audit_events(conn: asyncpg.Connection, session_id: str | None = None, limit: int = 50) -> list[dict]:
+    """Recent audit events, newest first; filter to one session with ?session_id=.
+    Every session-bound event carries session_tainted (Day 5). Args are HMACs only."""
+    limit = min(max(limit, 1), 500)
+    cols = ("id, ts, event_type, agent_id, session_id, tool, decision, reason, approver, "
+            "session_tainted, args_hash, hash")
+    if session_id:
+        rows = await conn.fetch(f"SELECT {cols} FROM audit_events WHERE session_id = $1 ORDER BY id DESC LIMIT $2",
+                                session_id, limit)
+    else:
+        rows = await conn.fetch(f"SELECT {cols} FROM audit_events ORDER BY id DESC LIMIT $1", limit)
+    return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------- tokens
 
 
@@ -172,9 +190,12 @@ async def create_token(data: TokenRequest, state: State, conn: asyncpg.Connectio
     settings, fga = state.settings, state.fga
     scopes = sorted(set(data.scopes))
 
-    async def refuse(status: int, reason: str, session_id: str | None = None) -> Response:
+    async def refuse(status: int, reason: str) -> Response:
+        # Day 5: if the request names an existing session, the denial carries its taint too.
+        st = await taint.load(conn, data.session_id) if data.session_id else None
         ev = await audit.append_event(conn, event_type="token_denied", decision="deny", reason=reason,
-                                      agent_id=data.agent_id, session_id=session_id)
+                                      agent_id=data.agent_id, session_id=data.session_id,
+                                      session_tainted=st.tainted if st else None)
         return _json(status, {"error": "token_denied", "reason": reason, "audit_id": ev["id"]})
 
     agent = await conn.fetchrow("SELECT id, status FROM agents WHERE id = $1", data.agent_id)
@@ -195,17 +216,19 @@ async def create_token(data: TokenRequest, state: State, conn: asyncpg.Connectio
     if not_granted:
         return await refuse(403, f"agent '{data.agent_id}' may not hold: {', '.join(not_granted)}")
 
-    # Session: reuse the orchestrator run's session, or start a new one.
+    # Session: reuse the orchestrator run's session (taint and all), or start a new, clean one.
     if data.session_id:
         try:
             sid = uuid.UUID(data.session_id)
         except ValueError:
             return await refuse(400, "session_id is not a UUID")
-        if not await conn.fetchval("SELECT 1 FROM sessions WHERE id = $1", sid):
+        st = await taint.load(conn, str(sid))
+        if st is None:
             return await refuse(404, "unknown session_id")
     else:
         sid = uuid.uuid4()
         await conn.execute("INSERT INTO sessions (id) VALUES ($1)", sid)
+        st = taint.SessionTaint(False)
 
     task_id = str(uuid.uuid4())
     token, claims = issue_token(state.key, settings, agent_id=data.agent_id, session_id=str(sid),
@@ -218,11 +241,13 @@ async def create_token(data: TokenRequest, state: State, conn: asyncpg.Connectio
     )
     await audit.append_event(conn, event_type="token_issued", decision="info",
                              reason=f"scopes: {' '.join(scopes)}; task: {data.task[:120]}",
-                             agent_id=data.agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"])
+                             agent_id=data.agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"],
+                             session_tainted=st.tainted)
     body = TokenResponse(
         access_token=token, token_type="Bearer", expires_in=settings.token_ttl_seconds,
         expires_at=datetime.fromtimestamp(claims["exp"], tz=timezone.utc).isoformat(),
         agent_id=data.agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"], scopes=scopes,
+        session_tainted=st.tainted, tainted_by=st.tainted_by,
     )
     return _json(201, body)
 
@@ -301,48 +326,49 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     except TokenError as exc:
         return _json(401, {"decision": "deny", "reason": str(exc)})
 
-    # 2. Revocation / kill switch. The token is genuine, so this attempt is audited.
-    try:
-        await check_not_revoked(conn, claims)
-    except TokenError as exc:
-        ev = await audit.append_event(conn, event_type="tool_call", decision="deny", reason=str(exc),
-                                      agent_id=claims.agent_id, session_id=claims.session_id,
-                                      task_id=claims.task_id, jti=claims.jti, tool=name)
-        return _json(401, {"decision": "deny", "reason": str(exc), "tool": name, "audit_id": ev["id"]})
+    # 2. Session taint (Day 5): set by the gate, never by the agent. Loaded first so that
+    #    every audit row for this call, even an early deny, records the taint it was judged under.
+    st = await taint.load(conn, claims.session_id)
+    tainted = st.tainted if st else None
 
-    async def record(decision: str, reason: str, *, args_hash: str | None = None,
-                     tainted: bool | None = None) -> dict:
+    async def record(decision: str, reason: str, *, args_hash: str | None = None) -> dict:
         return await audit.append_event(
             conn, event_type="tool_call", decision=decision, reason=reason, agent_id=claims.agent_id,
             session_id=claims.session_id, task_id=claims.task_id, jti=claims.jti, tool=name,
             args_hash=args_hash, session_tainted=tainted)
 
-    # 3. Known tool, valid arguments.
+    # 3. Revocation / kill switch. The token is genuine, so this attempt is audited.
+    try:
+        await check_not_revoked(conn, claims)
+    except TokenError as exc:
+        ev = await record("deny", str(exc))
+        return _json(401, {"decision": "deny", "reason": str(exc), "tool": name, "audit_id": ev["id"],
+                           "session_tainted": tainted})
+
+    # 4. Known session, known tool, valid arguments.
+    if st is None:
+        ev = await record("deny", "unknown session")
+        return _json(401, ToolResult(decision="deny", reason="unknown session", tool=name, audit_id=ev["id"]))
     tool = TOOLS.get(name)
     if tool is None:
         ev = await record("deny", f"unknown tool '{name}'")
         return _json(404, ToolResult(decision="deny", reason=f"unknown tool '{name}'", tool=name,
-                                     audit_id=ev["id"]))
+                                     audit_id=ev["id"], session_tainted=tainted))
     args_hash = audit.args_digest(settings.args_hmac_key, data.args)
     try:
         parsed = parse_args(tool, data.args)
     except msgspec.ValidationError as exc:
         ev = await record("deny", f"invalid arguments: {exc}", args_hash=args_hash)
         return _json(422, ToolResult(decision="deny", reason=f"invalid arguments: {exc}", tool=name,
-                                     audit_id=ev["id"]))
+                                     audit_id=ev["id"], session_tainted=tainted))
 
-    # 4. Session taint: set by the gate, never by the agent.
-    tainted = await conn.fetchval("SELECT tainted FROM sessions WHERE id = $1::uuid", claims.session_id)
-    if tainted is None:
-        ev = await record("deny", "unknown session", args_hash=args_hash)
-        return _json(401, ToolResult(decision="deny", reason="unknown session", tool=name, audit_id=ev["id"]))
-
-    # 5. Policy decision.
+    # 5. Policy decision, with the session's taint as OpenFGA context.
     decision = await decide(state.fga, agent_id=claims.agent_id, tool=name, token_scopes=claims.scopes,
-                            amount=amount_of(tool, parsed), session_tainted=tainted)
+                            amount=amount_of(tool, parsed), session_tainted=st.tainted,
+                            tainted_by=st.tainted_by)
 
     if decision.outcome == "deny":
-        ev = await record("deny", decision.reason, args_hash=args_hash, tainted=tainted)
+        ev = await record("deny", decision.reason, args_hash=args_hash)
         return _json(503 if decision.policy_error else 403,
                      ToolResult(decision="deny", reason=decision.reason, tool=name, audit_id=ev["id"],
                                 session_tainted=tainted))
@@ -353,8 +379,7 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
         row = await state.approvals.create(
             conn, agent_id=claims.agent_id, session_id=claims.session_id, task_id=claims.task_id,
             tool=name, args=data.args, args_hash=args_hash, reason=decision.reason, session_tainted=tainted)
-        ev = await record("escalate", f"{decision.reason}; approval {row['id']}", args_hash=args_hash,
-                          tainted=tainted)
+        ev = await record("escalate", f"{decision.reason}; approval {row['id']}", args_hash=args_hash)
         await state.approvals.announce(conn, row, ev["id"])
         return _json(202, ToolResult(decision="escalate", reason=decision.reason, tool=name,
                                      audit_id=ev["id"], approval_id=str(row["id"]), status="pending",
@@ -364,12 +389,19 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     try:
         result = await tool.run(parsed)
     except ValueError as exc:
-        ev = await record("allow", f"{decision.reason}; tool rejected input: {exc}", args_hash=args_hash,
-                          tainted=tainted)
+        ev = await record("allow", f"{decision.reason}; tool rejected input: {exc}", args_hash=args_hash)
         return _json(400, ToolResult(decision="allow", reason=f"tool error: {exc}", tool=name,
                                      audit_id=ev["id"], session_tainted=tainted))
-    # TODO(Day 5): if tool.taints, set sessions.tainted = true (tainted_by = name) here.
-    ev = await record("allow", decision.reason, args_hash=args_hash, tainted=tainted)
+    # The call row records the taint the decision was made under (before this call).
+    ev = await record("allow", decision.reason, args_hash=args_hash)
+
+    # 7. Day 5: untrusted content taints the session BEFORE the agent sees it. If marking
+    #    fails, this raises and the content is never returned (fail closed).
+    if tool.taints:
+        await taint.mark(conn, session_id=claims.session_id, tool=name, agent_id=claims.agent_id,
+                         task_id=claims.task_id, jti=claims.jti)
+        tainted = True
+    # Response: session_tainted is the session's state AFTER this call.
     return _json(200, ToolResult(decision="allow", reason=decision.reason, tool=name, audit_id=ev["id"],
                                  result=result, session_tainted=tainted))
 
@@ -475,7 +507,7 @@ async def slack_events(scope: dict, receive: Any, send: Any) -> None:
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.3.0",
+    version="0.4.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),
@@ -485,7 +517,7 @@ openapi_config = OpenAPIConfig(
 )
 
 app = Litestar(
-    route_handlers=[health, jwks, audit_verify, create_token, revoke_token, list_agents,
+    route_handlers=[health, jwks, audit_verify, audit_events, create_token, revoke_token, list_agents,
                     disable_agent, enable_agent, call_tool,
                     poll_approval, cancel_approval, list_approvals, decide_approval, slack_events],
     lifespan=[lifespan],

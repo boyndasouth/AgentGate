@@ -5,7 +5,7 @@ Runs the demo orchestrator in Docker against the local or the Render broker.
   .\scripts\run_agents.ps1 -Target render pay  # deployed broker
   .\scripts\run_agents.ps1 -Target render -Agent finance 'Pay $12 to Acme Supplies'
 
-GOOGLE_API_KEY (+ optional AGENT_MODEL) come from .env.agents, kept apart from the broker's .env.
+GOOGLE_API_KEY (+ optional AGENT_MODEL, GROQ_API_KEY) come from .env.agents, kept apart from the broker's .env.
 Orchestrator key: .env (local) or .env.render (render, which also holds AGENTGATE_URL).
 Never prints the keys.
 #>
@@ -50,9 +50,10 @@ $env:AGENTGATE_URL = $url
 $env:AGENTGATE_ORCHESTRATOR_KEY = $orch
 $env:GOOGLE_API_KEY = $gkey
 if ($agentCfg['AGENT_MODEL']) { $env:AGENT_MODEL = $agentCfg['AGENT_MODEL'] }
+if ($agentCfg['GROQ_API_KEY']) { $env:GROQ_API_KEY = $agentCfg['GROQ_API_KEY'] }   # optional fallback provider
 $env:PYDANTIC_AI_NO_BANNER = '1'
 
 docker compose --profile agents run --rm `
-    -e AGENTGATE_URL -e AGENTGATE_ORCHESTRATOR_KEY -e GOOGLE_API_KEY -e AGENT_MODEL -e PYDANTIC_AI_NO_BANNER `
+    -e AGENTGATE_URL -e AGENTGATE_ORCHESTRATOR_KEY -e GOOGLE_API_KEY -e GROQ_API_KEY -e AGENT_MODEL -e PYDANTIC_AI_NO_BANNER `
     agents @cliArgs
 exit $LASTEXITCODE

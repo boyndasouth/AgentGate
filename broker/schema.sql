@@ -82,12 +82,15 @@ UPDATE approvals SET expires_at = created_at + interval '2 minutes' WHERE expire
 ALTER TABLE approvals ALTER COLUMN expires_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS approvals_status_idx ON approvals (status, created_at);
 
+-- Day 5: when the session became tainted (tainted_by already exists).
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tainted_at timestamptz;
+
 -- Append-only, hash-chained audit log.
 -- hash = sha256(prev_hash || canonical_json(event)). Args are stored as a keyed hash only.
 CREATE TABLE IF NOT EXISTS audit_events (
     id              bigint PRIMARY KEY,          -- assigned by the broker, gap-free
     ts              text NOT NULL,               -- canonical UTC string, hashed as-is
-    event_type      text NOT NULL,               -- 'tool_call' | 'token_issued' | 'token_denied' | 'token_revoked' | 'agent_disabled' | 'agent_enabled' | 'approval_resolved' | 'approval_refused'
+    event_type      text NOT NULL,               -- 'tool_call' | 'token_issued' | 'token_denied' | 'token_revoked' | 'agent_disabled' | 'agent_enabled' | 'approval_resolved' | 'approval_refused' | 'session_tainted'
     agent_id        text,
     session_id      text,
     task_id         text,

@@ -29,7 +29,7 @@ from typing import Any, Protocol
 
 import asyncpg
 
-from . import audit
+from . import audit, taint
 from .fga import FGAClient, PolicyEngineError
 from .tools import TOOLS, parse_args
 
@@ -205,7 +205,7 @@ class ApprovalService:
                 raise ApprovalError(f"already {latest['status'] if latest else 'gone'}")
 
             if approve:
-                result, outcome = await self._run(claimed)
+                result, outcome = await self._run(conn, claimed)
                 reason = f"approved by {approver.label}; {outcome}; approval {claimed['id']}"
             else:
                 result = None
@@ -223,14 +223,20 @@ class ApprovalService:
 
     # ------------------------------------------------------------------ internals
 
-    async def _run(self, row: dict) -> tuple[dict, str]:
+    async def _run(self, conn: asyncpg.Connection, row: dict) -> tuple[dict, str]:
         """Replay the approved call. The broker, not the agent, executes it."""
         tool = TOOLS[row["tool"]]
         try:
             result = await tool.run(parse_args(tool, row["args"]))
         except Exception as exc:   # noqa: BLE001 - report tool failure to the agent, keep the chain going
             return {"error": str(exc)}, f"tool failed: {exc}"
-        # TODO(Day 5): if tool.taints, mark the session tainted here too (no approvable tool taints today).
+        # Day 5: an approved call to a tainting tool still taints the session before the
+        # polling agent gets the content. (No approvable tool taints today; kept for parity
+        # with the gate so a future policy change can't open a hole.)
+        if tool.taints:
+            await taint.mark(conn, session_id=str(row["session_id"]), tool=row["tool"],
+                             agent_id=row["agent_id"], task_id=str(row["task_id"]),
+                             via=f" (approved call {row['id']})")
         return result, f"tool ran: {result.get('status', 'ok')}"
 
     async def _expire(self, conn: asyncpg.Connection, row: dict, *, via: str, reason: str) -> dict:

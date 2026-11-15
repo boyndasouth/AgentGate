@@ -15,13 +15,38 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+import sys
+
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models import infer_model
+from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.usage import UsageLimits
 
 from .gate_client import AgentToken, GateClient, GateResult
 
-# Free-tier friendly default; override with AGENT_MODEL (e.g. google:gemini-3.1-flash-lite).
-MODEL = os.environ.get("AGENT_MODEL", "google:gemini-3.5-flash-lite")
+# AGENT_MODEL: one model, or a comma-separated fallback list tried in order. Pydantic AI's
+# FallbackModel moves to the next model on any provider API error (503 overloaded, 429 quota, ...).
+#   AGENT_MODEL=google:gemini-3.1-flash-lite,google:gemini-3.5-flash-lite,groq:openai/gpt-oss-120b
+# A model whose API key isn't set (GOOGLE_API_KEY, GROQ_API_KEY) is skipped with a warning.
+DEFAULT_MODEL = "google:gemini-3.5-flash-lite"
+
+
+def _build_model(spec: str):
+    names = [n.strip() for n in spec.split(",") if n.strip()] or [DEFAULT_MODEL]
+    if len(names) == 1:
+        return names[0]                       # resolved lazily by the Agent (offline tests need no key)
+    models = []
+    for name in names:
+        try:
+            models.append(infer_model(name))
+        except Exception as exc:              # noqa: BLE001 - typically a missing API key
+            print(f"warning: skipping fallback model {name}: {exc}", file=sys.stderr)
+    if not models:
+        raise RuntimeError(f"no usable model in AGENT_MODEL={spec!r}")
+    return models[0] if len(models) == 1 else FallbackModel(*models)
+
+
+MODEL = _build_model(os.environ.get("AGENT_MODEL", DEFAULT_MODEL))
 
 # Hard caps per agent run, so a confused agent can't loop on denials or burn the free tier.
 LIMITS = UsageLimits(request_limit=6, tool_calls_limit=4)

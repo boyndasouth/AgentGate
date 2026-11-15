@@ -70,7 +70,7 @@ def approval_blocks(row: dict, *, args: dict | None = None) -> list[dict]:
     fields = [
         _plain(f"Agent: {row['agent_id']}"),
         _plain(f"Tool: {row['tool']}"),
-        _plain(f"Session: {'TAINTED (read untrusted content)' if tainted else 'clean'}"),
+        _plain(f"Session: {'⚠️ TAINTED (read untrusted content)' if tainted else 'clean'}"),
         _plain(f"Approval: {str(row['id'])[:8]}"),
     ]
     summary = summarize_args(row["tool"], args if args is not None else row.get("args"))

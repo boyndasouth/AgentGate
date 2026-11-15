@@ -47,21 +47,33 @@ foreach ($k in 'AGENTGATE_ORCHESTRATOR_KEY', 'AGENTGATE_ADMIN_KEY') { if (-not $
 $orch = @{ 'X-Orchestrator-Key' = $cfg['AGENTGATE_ORCHESTRATOR_KEY'] }
 $admin = @{ 'X-Admin-Key' = $cfg['AGENTGATE_ADMIN_KEY'] }
 
-# --- HTTP helper: status + body for 2xx and 4xx alike -------------------------
+# --- HTTP helper: status + body for 2xx, 4xx and 5xx alike ---------------------
+# Never throws on an HTTP status or an empty / non-JSON body (Render's proxy can answer a
+# poll with an empty 502/503 while the free instance is busy). Status 0 = no response at all.
+function ConvertFrom-GateBody($Content, [int]$Status) {
+    $Text = if ($Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($Content) } else { [string]$Content }
+    if ([string]::IsNullOrWhiteSpace($Text)) { return [pscustomobject]@{ reason = "HTTP $Status (empty body)" } }
+    try { return ($Text | ConvertFrom-Json) }
+    catch { return [pscustomobject]@{ reason = "HTTP ${Status}: $($Text.Substring(0, [Math]::Min(120, $Text.Length)))" } }
+}
 function Invoke-Gate {
     param([string]$Method, [string]$Path, $Body = $null, [hashtable]$Headers = @{})
     $p = @{ Method = $Method; Uri = "$BaseUrl$Path"; Headers = $Headers; UseBasicParsing = $true; TimeoutSec = 120 }
     if ($null -ne $Body) { $p.Body = ($Body | ConvertTo-Json -Depth 10 -Compress); $p.ContentType = 'application/json' }
-    if ($PSVersionTable.PSVersion.Major -ge 7) {
-        $r = Invoke-WebRequest @p -SkipHttpErrorCheck
-        return [pscustomobject]@{ Status = [int]$r.StatusCode; Body = ($r.Content | ConvertFrom-Json) }
-    }
     try {
-        $r = Invoke-WebRequest @p
-        return [pscustomobject]@{ Status = [int]$r.StatusCode; Body = ($r.Content | ConvertFrom-Json) }
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $r = Invoke-WebRequest @p -SkipHttpErrorCheck
+        } else {
+            $r = Invoke-WebRequest @p
+        }
+        return [pscustomobject]@{ Status = [int]$r.StatusCode; Body = (ConvertFrom-GateBody $r.Content ([int]$r.StatusCode)) }
     } catch {
-        if (-not $_.Exception.Response) { throw }
-        return [pscustomobject]@{ Status = [int]$_.Exception.Response.StatusCode; Body = ($_.ErrorDetails.Message | ConvertFrom-Json) }
+        $resp = $_.Exception.Response
+        if (-not $resp) {   # DNS / connection reset / timeout: no HTTP response
+            return [pscustomobject]@{ Status = 0; Body = [pscustomobject]@{ reason = $_.Exception.Message } }
+        }
+        $status = [int]$resp.StatusCode
+        return [pscustomobject]@{ Status = $status; Body = (ConvertFrom-GateBody $_.ErrorDetails.Message $status) }
     }
 }
 
@@ -138,10 +150,13 @@ if ($AutoDeny) {
     Write-Host '       Check Slack: the message shows the TAINTED session. Click Deny.' -ForegroundColor Yellow
 }
 $auth = @{ Authorization = "Bearer $($mt.access_token)" }
+# Poll every 2 s like the agent does. 202 = still pending; 0 / 5xx = transient (Render proxy), keep going.
+$deadline = (Get-Date).AddSeconds(180)
 do {
     Start-Sleep -Seconds 2
     $p = Invoke-Gate GET "/approvals/$approvalId" $null $auth
-} while ($p.Status -eq 202)
+    if ($p.Status -eq 0 -or $p.Status -ge 500) { Write-Host "       (transient: $($p.Body.reason); still polling)" -ForegroundColor DarkGray }
+} while (($p.Status -eq 202 -or $p.Status -eq 0 -or $p.Status -ge 500) -and (Get-Date) -lt $deadline)
 Show-Step 'Agent poll after the human decision' $p 403
 if ($p.Status -eq 200) { Write-Host '       (you clicked Approve, so the email was sent; re-run and click Deny)' -ForegroundColor Yellow }
 

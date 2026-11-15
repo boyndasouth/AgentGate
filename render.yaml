@@ -1,0 +1,31 @@
+# Render Blueprint: AgentGate broker + in-memory OpenFGA in one free web service.
+# Database = Supabase (session pooler). Secrets are entered in the dashboard (sync: false).
+services:
+  - type: web
+    name: agentgate-broker
+    runtime: docker
+    plan: free
+    region: virginia            # pick the Render region closest to your Supabase region
+    dockerfilePath: ./deploy/render/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: OPENFGA_VERSION     # informational; the image tag is pinned in the Dockerfile ARG
+        value: v1.22.1
+      # Supabase -> Connect -> Session pooler (port 5432), plus ?sslmode=require
+      - key: DATABASE_URL
+        sync: false
+      - key: AGENTGATE_SIGNING_KEY
+        sync: false
+      - key: AGENTGATE_ADMIN_KEY
+        sync: false
+      - key: AGENTGATE_ORCHESTRATOR_KEY
+        sync: false
+      - key: AGENTGATE_ARGS_HMAC_KEY
+        sync: false
+      # Only if your broker/Dockerfile starts the app differently:
+      # - key: BROKER_CMD
+      #   value: uvicorn app.main:app --host 0.0.0.0 --port 8000

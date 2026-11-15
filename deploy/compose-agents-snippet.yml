@@ -1,0 +1,5 @@
+# Add this service by hand under `services:` in docker-compose.yml.
+# The `agents` profile keeps it out of a plain `docker compose up`.
+  agents:
+    build: ./agents
+    profiles: ["agents"]

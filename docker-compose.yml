@@ -95,6 +95,10 @@ services:
       - broker-postgres
       - openfga
     restart: unless-stopped
+  agents:
+    build: ./agents
+    profiles: ["agents"]
+    
   
   # Day 2: uncomment once broker/Dockerfile exists.
   # broker:

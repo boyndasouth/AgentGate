@@ -7,6 +7,12 @@ services:
     plan: free
     region: virginia            # pick the Render region closest to your Supabase region
     dockerfilePath: ./deploy/render/Dockerfile
+    buildFilter:
+      paths:
+        - broker/**
+        - policy/**
+        - deploy/render/**
+        - render.yaml
     dockerContext: .
     healthCheckPath: /health
     autoDeploy: true

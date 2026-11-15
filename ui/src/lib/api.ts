@@ -13,9 +13,6 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
 			headers: init.body === undefined ? {} : { 'content-type': 'application/json' },
 			body: init.body === undefined ? undefined : JSON.stringify(init.body)
 		});
-		if (res.status === 401) {
-			location.href = '/login';
-		}
 		const text = await res.text();
 		let data: unknown = null;
 		try {
@@ -24,6 +21,10 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
 			data = { detail: text.slice(0, 300) };
 		}
 		const d = data as { detail?: string; message?: string } | null;
+		// Only our own hook's 401 means the admin session is gone. Redirect once.
+		if (res.status === 401 && d?.detail === 'not signed in' && location.pathname !== '/login') {
+			location.href = '/login';
+		}
 		return {
 			ok: res.ok,
 			status: res.status,

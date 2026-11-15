@@ -2,6 +2,20 @@ import { error, json, redirect, type Handle } from '@sveltejs/kit';
 import { sequence } from '@sveltejs/kit/hooks';
 import { handle as authHandle } from './auth';
 import { adminFromSession } from '$lib/server/admin';
+import { env } from '$env/dynamic/private';
+
+// Fail loudly at startup on missing or malformed config instead of a stack trace at login.
+const REQUIRED = ['AUTH_SECRET', 'AUTH_AUTH0_ID', 'AUTH_AUTH0_SECRET', 'AUTH_AUTH0_ISSUER', 'ADMIN_USERS', 'BROKER_URL', 'AGENTGATE_ADMIN_KEY'];
+for (const name of REQUIRED) {
+	if (!env[name]?.trim()) console.error(`[agentgate-ui] ${name} is not set (see ui/.env.example)`);
+}
+for (const name of ['AUTH_AUTH0_ISSUER', 'BROKER_URL']) {
+	const v = env[name]?.trim();
+	if (v && !/^https?:\/\/[^\s#]+$/.test(v)) console.error(`[agentgate-ui] ${name} is not a URL: "${v}"`);
+}
+if (env.AUTH_AUTH0_ISSUER && !env.AUTH_AUTH0_ISSUER.trim().endsWith('/')) {
+	console.error('[agentgate-ui] AUTH_AUTH0_ISSUER should end with "/" (e.g. https://dev-xxxx.us.auth0.com/)');
+}
 
 // Paths that work without an admin session.
 const PUBLIC = ['/auth', '/login', '/signout', '/denied'];

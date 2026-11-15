@@ -48,6 +48,14 @@ export async function broker<T = unknown>(
 		} catch {
 			data = { detail: text.slice(0, 500) };
 		}
+		// A 401 from the broker means *our* key is wrong, not that the admin's
+		// login expired. Report it as a 502 config error so the browser never
+		// mistakes it for a sign-out (which caused a /login redirect loop).
+		if (res.status === 401 && (auth === 'admin' || auth === 'orchestrator')) {
+			const which = auth === 'admin' ? 'AGENTGATE_ADMIN_KEY' : 'AGENTGATE_ORCHESTRATOR_KEY';
+			const msg = `broker rejected the UI's ${which} (check ui/.env or Vercel env, then restart)`;
+			return { status: 502, ok: false, data: { detail: msg } as T, error: msg };
+		}
 		return { status: res.status, ok: res.ok, data: data as T };
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);

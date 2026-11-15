@@ -38,7 +38,7 @@ const big = await demo.runScenario('big');
 check('pay $5,000 → escalate', last(big).outcome === 'escalate' && !!big.approvalId);
 let p = await demo.pollApproval(big.keepToken, big.approvalId);
 check('agent poll sees pending', p.state === 'pending');
-const dec = await broker(`/approvals/${big.approvalId}/decision`, { method: 'POST', body: { approve: false, approver: 'user:shiwin', via: 'admin-ui:auth0:auth0|admin1' } });
+const dec = await broker(`/approvals/${big.approvalId}/decision`, { method: 'POST', body: { approve: false, approver: 'user:shiwin' } });
 check('deny via admin API', dec.ok, JSON.stringify(dec.data));
 p = await demo.pollApproval(big.keepToken, big.approvalId);
 check('agent poll sees denied', p.state === 'denied', p.agentSays);

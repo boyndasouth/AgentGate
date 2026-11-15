@@ -89,6 +89,7 @@ class H(BaseHTTPRequestHandler):
         if p.endswith("/decision"):
             a = approvals.get(p.split("/")[2])
             if not a or a["status"] != "pending": return self.send(409, {"detail": "already decided"})
+            if set(b) != {"approve", "approver"}: return self.send(400, {"detail": "Validation failed for POST " + p})
             if b.get("approver") != "user:shiwin": return self.send(403, {"detail": f"{b.get('approver')} is not an approver"})
             a["status"] = "approved" if b["approve"] else "denied"; a["approver"] = f"{b['approver']} via {b.get('via', 'admin-api')}"
             audit(event_type="approval_resolved", agent_id=a["agent_id"], tool=a["tool"], decision="allow" if b["approve"] else "deny", reason=a["status"], approver=a["approver"])

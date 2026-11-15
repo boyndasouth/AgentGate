@@ -23,12 +23,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const r = await broker(`/approvals/${params.id}/decision`, {
 		method: 'POST',
-		body: {
-			approve: body.approve,
-			approver: `user:${admin.fgaUser}`,
-			// Who clicked, recorded by the broker in the audit row (see broker patch).
-			via: `admin-ui:auth0:${admin.sub}`
-		}
+		// The broker's DecisionRequest is strict ({approve, approver} only) and
+		// records "user:X via admin-api".
+		// TODO: record the Auth0 sub too, once the broker accepts a `via` field.
+		body: { approve: body.approve, approver: `user:${admin.fgaUser}` }
 	});
 	if (!r.ok) return json({ detail: detail(r) }, { status: r.status || 502 });
 	return json(r.data);

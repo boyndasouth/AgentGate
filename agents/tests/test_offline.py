@@ -28,6 +28,9 @@ class FakeGate:
         self.tokens: dict[str, dict] = {}
         self.audit: list[dict] = []
         self.seen_auth_on_tools: list[str] = []
+        self.human = "deny"                       # Day 4: what the Slack human does: deny | approve | never
+        self.approvals: dict[str, dict] = {}      # approval_id -> {"tool", "args", "polls", "token"}
+        self.cancelled: list[str] = []
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         path = req.url.path
@@ -47,6 +50,8 @@ class FakeGate:
                 "agent_id": body["agent_id"], "session_id": self.tokens[tok]["session_id"],
                 "task_id": str(uuid.uuid4()), "jti": str(uuid.uuid4()), "scopes": body["scopes"],
             })
+        if path.startswith("/approvals/"):
+            return self._approval(req, path)
         if path.startswith("/tools/"):
             tool = path.rsplit("/", 1)[1]
             auth = req.headers.get("Authorization", "")
@@ -63,13 +68,41 @@ class FakeGate:
             else:
                 decision, reason, code = "allow", "policy allows", 200
             self.audit.append({"tool": tool, "decision": decision, "session": tok["session_id"]})
+            approval_id = str(uuid.uuid4()) if decision == "escalate" else None
+            if approval_id:
+                self.approvals[approval_id] = {"tool": tool, "args": args, "polls": 0, "token": auth}
             return httpx.Response(code, json={
                 "decision": decision, "reason": reason, "tool": tool, "audit_id": len(self.audit),
                 "result": {"ok": True, "echo": args} if decision == "allow" else None,
-                "approval_id": str(uuid.uuid4()) if decision == "escalate" else None,
-                "status": "pending" if decision == "escalate" else None, "session_tainted": False,
+                "approval_id": approval_id, "status": "pending" if decision == "escalate" else None,
+                "session_tainted": False,
             })
         return httpx.Response(404)
+
+    def _approval(self, req: httpx.Request, path: str) -> httpx.Response:
+        parts = path.split("/")                  # ['', 'approvals', id] or [..., id, 'cancel']
+        appr = self.approvals.get(parts[2])
+        if appr is None or req.headers.get("Authorization") != appr["token"]:
+            return httpx.Response(404, json={"decision": "deny", "reason": "unknown approval"})
+        base = {"tool": appr["tool"], "approval_id": parts[2]}
+        if len(parts) == 4 and parts[3] == "cancel":
+            self.cancelled.append(parts[2])
+            self.audit.append({"tool": appr["tool"], "decision": "deny", "session": None})
+            return httpx.Response(403, json={**base, "decision": "deny", "status": "expired",
+                                             "reason": "approval expired (the agent stopped waiting)"})
+        appr["polls"] += 1
+        if self.human == "never" or appr["polls"] < 2:
+            return httpx.Response(202, json={**base, "decision": "escalate", "status": "pending",
+                                             "reason": "waiting for a human"})
+        who = "user:shiwin via slack:U123"
+        self.audit.append({"tool": appr["tool"], "decision": "allow" if self.human == "approve" else "deny",
+                           "session": None, "approver": who})
+        if self.human == "approve":
+            return httpx.Response(200, json={**base, "decision": "allow", "status": "approved",
+                                             "reason": f"approved by {who}", "approver": who,
+                                             "result": {"status": "completed", "tx_id": "tx_test"}})
+        return httpx.Response(403, json={**base, "decision": "deny", "status": "denied",
+                                         "reason": f"denied by {who}", "approver": who})
 
 
 def scripted(tool: str, args: dict, final: str = "done") -> FunctionModel:
@@ -87,7 +120,8 @@ def scripted(tool: str, args: dict, final: str = "done") -> FunctionModel:
 @pytest.fixture
 def gate_and_fake():
     fake = FakeGate()
-    gate = GateClient("http://gate.test", ORCH_KEY, transport=httpx.MockTransport(fake.handler))
+    gate = GateClient("http://gate.test", ORCH_KEY, transport=httpx.MockTransport(fake.handler),
+                      poll_interval_s=0.01, max_approval_wait_s=0.5)
     return gate, fake
 
 
@@ -107,12 +141,36 @@ async def test_pay_allowed(gate_and_fake):
     assert all(a.startswith("Bearer tok-") for a in fake.seen_auth_on_tools)
 
 
+BIG = {"finance": scripted("transfer_funds", {"amount": 5000, "to_account": "Northwind"})}
+
+
 @pytest.mark.asyncio
-async def test_big_payment_escalates_and_stops(gate_and_fake):
+async def test_big_payment_denied_in_slack_is_reported(gate_and_fake, capsys):
+    """Day 4 done check, offline: escalate -> human clicks Deny -> agent reports the denial."""
     gate, fake = gate_and_fake
-    rc = await _run("big", gate, {"finance": scripted("transfer_funds", {"amount": 5000, "to_account": "Northwind"})})
-    assert rc == 1
-    assert [e["decision"] for e in fake.audit] == ["escalate"]
+    fake.human = "deny"
+    assert await _run("big", gate, BIG) == 1
+    assert [e["decision"] for e in fake.audit] == ["escalate", "deny"]
+    out = capsys.readouterr().out
+    assert "denied by user:shiwin" in out and "finance says: done: deny" in out
+
+
+@pytest.mark.asyncio
+async def test_big_payment_approved_in_slack_returns_result(gate_and_fake, capsys):
+    gate, fake = gate_and_fake
+    fake.human = "approve"
+    assert await _run("big", gate, BIG) == 0
+    assert [e["decision"] for e in fake.audit] == ["escalate", "allow"]
+    assert "finance says: done: allow" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_no_human_decision_times_out_as_deny_and_cancels(gate_and_fake):
+    gate, fake = gate_and_fake
+    fake.human = "never"
+    assert await _run("big", gate, BIG) == 1
+    assert len(fake.cancelled) == 1                     # late clicks can't run it any more
+    assert fake.audit[-1]["decision"] == "deny"
 
 
 @pytest.mark.asyncio

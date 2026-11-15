@@ -1,0 +1,20 @@
+# Slack app for LOCAL dev: Socket Mode (outbound websocket, no public URL needed).
+# api.slack.com/apps -> Create New App -> From a manifest -> paste this.
+display_information:
+  name: AgentGate Dev
+  description: Approve or deny risky AI agent actions (local dev)
+  background_color: "#1f2937"
+features:
+  bot_user:
+    display_name: AgentGate Dev
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write          # post approval requests, update them, ephemeral replies
+settings:
+  interactivity:
+    is_enabled: true        # button clicks
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

@@ -8,7 +8,7 @@
 
 Usage (inside the agents container, see scripts/run_agents.ps1):
   python -m agents.orchestrator pay          # $40 invoice -> allow
-  python -m agents.orchestrator big          # $5,000 -> escalate (pending until Day 4 Slack)
+  python -m agents.orchestrator big          # $5,000 -> escalate -> waits for Approve/Deny in Slack
   python -m agents.orchestrator brief        # researcher -> mailer hand-off
   python -m agents.orchestrator scope        # researcher asks for transfer_funds -> refused at issuance
   python -m agents.orchestrator --agent finance 'Pay $12 to Acme Supplies'
@@ -116,7 +116,8 @@ async def main() -> int:
     else:
         p.error(f"unknown scenario {a.arg!r}; pick one of {', '.join(SCENARIOS)}")
 
-    async with GateClient(_env("AGENTGATE_URL"), _env("AGENTGATE_ORCHESTRATOR_KEY")) as gate:
+    async with GateClient(_env("AGENTGATE_URL"), _env("AGENTGATE_ORCHESTRATOR_KEY"),
+                          on_event=lambda line: print(line, flush=True)) as gate:
         return await run_plan(steps, gate)
 
 

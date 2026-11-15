@@ -16,7 +16,7 @@ from typing import Any
 
 import asyncpg
 import msgspec
-from litestar import Litestar, Request, Response, get, post
+from litestar import Litestar, Request, Response, asgi, get, post
 from litestar.connection import ASGIConnection
 from litestar.datastructures import State
 from litestar.di import Provide
@@ -26,11 +26,13 @@ from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 
 from . import audit
+from .approvals import ApprovalError, ApprovalService, Approver, admin_view, agent_view
 from .config import load_settings
 from .db import create_pool
 from .decision import decide, may_hold_scope
 from .fga import FGAClient, PolicyEngineError
 from .keys import SigningKey
+from .slack import SLACK_EVENTS_PATH, SlackApprovals
 from .tokens import TokenError, check_not_revoked, decode_token, issue_token
 from .tools import TOOLS, amount_of, parse_args
 
@@ -48,10 +50,23 @@ async def lifespan(app: Litestar) -> AsyncGenerator[None, None]:
     app.state.fga = FGAClient(settings.fga_api_url, settings.fga_store_id, settings.fga_model_id)
     if not await app.state.fga.ping():
         log.warning("OpenFGA store %s not reachable at startup; calls will fail closed", settings.fga_store_id)
-    log.info("AgentGate up. kid=%s", app.state.key.kid)
+
+    # Day 4: approvals + Slack. Slack is optional: without it, approvals are decided via the admin API.
+    approvals = ApprovalService(app.state.pool, app.state.fga, ttl_seconds=settings.approval_ttl_seconds)
+    app.state.approvals = approvals
+    app.state.slack = None
+    if settings.slack_mode != "off":
+        app.state.slack = SlackApprovals(settings, approvals.decide)
+        approvals.notifier = app.state.slack
+        await app.state.slack.start()
+    async with app.state.pool.acquire() as conn:
+        swept = await approvals.expire_overdue(conn)   # approvals left pending by a restart
+    log.info("AgentGate up. kid=%s slack=%s expired_on_boot=%d", app.state.key.kid, settings.slack_mode, swept)
     try:
         yield
     finally:
+        if app.state.slack is not None:
+            await app.state.slack.stop()
         await app.state.fga.close()
         await app.state.pool.close()
 
@@ -120,6 +135,7 @@ class ToolResult(msgspec.Struct, omit_defaults=True):
     result: dict[str, Any] | None = None
     approval_id: str | None = None   # escalate only
     status: str | None = None        # escalate: 'pending'
+    expires_at: str | None = None    # escalate: when the approval times out (counts as deny)
 
 
 def _json(status: int, body: Any) -> Response:
@@ -131,7 +147,7 @@ def _json(status: int, body: Any) -> Response:
 
 @get("/health", tags=["meta"])
 async def health(state: State) -> dict:
-    return {"status": "ok", "openfga": await state.fga.ping()}
+    return {"status": "ok", "openfga": await state.fga.ping(), "slack": state.settings.slack_mode}
 
 
 @get("/.well-known/jwks.json", tags=["tokens"])
@@ -332,18 +348,17 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
                                 session_tainted=tainted))
 
     if decision.outcome == "escalate":
-        approval_id = uuid.uuid4()
-        await conn.execute(
-            """INSERT INTO approvals (id, agent_id, session_id, task_id, tool, args, args_hash, reason)
-               VALUES ($1, $2, $3::uuid, $4::uuid, $5, $6, $7, $8)""",
-            approval_id, claims.agent_id, claims.session_id, claims.task_id, name, data.args,
-            args_hash, decision.reason)
-        # TODO(Day 4): post Approve / Deny buttons to Slack; GET /approvals/{id} for agent polling.
-        ev = await record("escalate", f"{decision.reason}; approval {approval_id}", args_hash=args_hash,
+        # Raw args are kept on the approval row only while pending: the broker replays the
+        # call itself on Approve, so the agent never re-sends it.
+        row = await state.approvals.create(
+            conn, agent_id=claims.agent_id, session_id=claims.session_id, task_id=claims.task_id,
+            tool=name, args=data.args, args_hash=args_hash, reason=decision.reason, session_tainted=tainted)
+        ev = await record("escalate", f"{decision.reason}; approval {row['id']}", args_hash=args_hash,
                           tainted=tainted)
+        await state.approvals.announce(conn, row, ev["id"])
         return _json(202, ToolResult(decision="escalate", reason=decision.reason, tool=name,
-                                     audit_id=ev["id"], approval_id=str(approval_id), status="pending",
-                                     session_tainted=tainted))
+                                     audit_id=ev["id"], approval_id=str(row["id"]), status="pending",
+                                     expires_at=row["expires_at"].isoformat(), session_tainted=tainted))
 
     # 6. Allow: run the tool (the broker, not the agent, holds any real API keys).
     try:
@@ -359,11 +374,108 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
                                  result=result, session_tainted=tainted))
 
 
+# ---------------------------------------------------------------- approvals (Day 4)
+
+
+async def _agent_claims(request: Request, state: State, conn: asyncpg.Connection):
+    """Bearer auth for agent-facing approval endpoints: same checks as the tool gateway
+    (signature, expiry, revocation / kill switch). Returns (claims, None) or (None, error response)."""
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None, _json(401, {"decision": "deny", "reason": "missing bearer token"})
+    try:
+        claims = decode_token(state.key, state.settings, auth[7:].strip())
+        await check_not_revoked(conn, claims)
+    except TokenError as exc:
+        return None, _json(401, {"decision": "deny", "reason": str(exc)})
+    return claims, None
+
+
+async def _own_approval(conn: asyncpg.Connection, state: State, approval_id: uuid.UUID, claims) -> dict | None:
+    """An agent may only see approvals from its own agent id AND session."""
+    row = await state.approvals.get(conn, approval_id)
+    if row is None or row["agent_id"] != claims.agent_id or str(row["session_id"]) != claims.session_id:
+        return None
+    return row
+
+
+@get("/approvals/{approval_id:uuid}", tags=["approvals"], dependencies={"conn": Provide(provide_conn)},
+     security=[{"BearerAuth": []}])
+async def poll_approval(approval_id: uuid.UUID, request: Request, state: State,
+                        conn: asyncpg.Connection) -> Response:
+    """Agent polling (every 2 s). 202 = still pending, 200 = approved (tool result included),
+    403 = denied or expired (timeout counts as deny). Not audited per poll; the resolution is."""
+    claims, err = await _agent_claims(request, state, conn)
+    if err is not None:
+        return err
+    row = await _own_approval(conn, state, approval_id, claims)
+    if row is None:
+        return _json(404, {"decision": "deny", "reason": "unknown approval"})
+    status, body = agent_view(row)
+    return _json(status, body)
+
+
+@post("/approvals/{approval_id:uuid}/cancel", tags=["approvals"], status_code=200,
+      dependencies={"conn": Provide(provide_conn)}, security=[{"BearerAuth": []}])
+async def cancel_approval(approval_id: uuid.UUID, request: Request, state: State,
+                          conn: asyncpg.Connection) -> Response:
+    """The agent stopped waiting. Closes the approval so a late click can't run the call.
+    If a human already decided, returns that decision instead."""
+    claims, err = await _agent_claims(request, state, conn)
+    if err is not None:
+        return err
+    row = await _own_approval(conn, state, approval_id, claims)
+    if row is None:
+        return _json(404, {"decision": "deny", "reason": "unknown approval"})
+    status, body = agent_view(await state.approvals.cancel(conn, row))
+    return _json(status, body)
+
+
+class DecisionRequest(msgspec.Struct, forbid_unknown_fields=True):
+    approve: bool
+    approver: str      # AgentGate user name, e.g. 'shiwin'; must be an OpenFGA approver of the tool
+
+
+@get("/approvals", tags=["approvals"], guards=[admin_guard], dependencies={"conn": Provide(provide_conn)},
+     security=[{"AdminKey": []}])
+async def list_approvals(state: State, conn: asyncpg.Connection, status: str | None = "pending",
+                         limit: int = 50) -> list[dict]:
+    """Approvals queue (Day 6 UI). status: pending | approved | denied | expired | all."""
+    rows = await state.approvals.list_recent(conn, None if status == "all" else status, min(max(limit, 1), 200))
+    return [admin_view(r) for r in rows]
+
+
+@post("/approvals/{approval_id:uuid}/decision", tags=["approvals"], guards=[admin_guard], status_code=200,
+      security=[{"AdminKey": []}])
+async def decide_approval(approval_id: uuid.UUID, data: DecisionRequest, state: State) -> Response:
+    """Fallback (and Day 6 UI) path for Approve / Deny, same rules as the Slack buttons."""
+    # TODO(Day 6): take the approver from the Auth0 login instead of the request body.
+    try:
+        row = await state.approvals.decide(approval_id, approve=data.approve,
+                                           approver=Approver(user=data.approver.removeprefix("user:"),
+                                                             via="admin-api"))
+    except ApprovalError as exc:
+        return _json(exc.status, {"error": "approval_not_applied", "reason": str(exc)})
+    return _json(200, admin_view(row))
+
+
+@asgi(SLACK_EVENTS_PATH, include_in_schema=False)
+async def slack_events(scope: dict, receive: Any, send: Any) -> None:
+    """Slack HTTP mode: button clicks arrive here. Bolt checks the signing secret."""
+    slack = scope["litestar_app"].state.slack
+    if slack is None or slack.settings.slack_mode != "http":
+        await send({"type": "http.response.start", "status": 404,
+                    "headers": [(b"content-type", b"text/plain")]})
+        await send({"type": "http.response.body", "body": b"Slack HTTP mode is not enabled"})
+        return
+    await slack.http_handler(scope, receive, send)
+
+
 # ---------------------------------------------------------------- app
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.2.0",
+    version="0.3.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),
@@ -374,7 +486,8 @@ openapi_config = OpenAPIConfig(
 
 app = Litestar(
     route_handlers=[health, jwks, audit_verify, create_token, revoke_token, list_agents,
-                    disable_agent, enable_agent, call_tool],
+                    disable_agent, enable_agent, call_tool,
+                    poll_approval, cancel_approval, list_approvals, decide_approval, slack_events],
     lifespan=[lifespan],
     openapi_config=openapi_config,
 )

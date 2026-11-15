@@ -68,14 +68,26 @@ CREATE TABLE IF NOT EXISTS approvals (
     created_at  timestamptz NOT NULL DEFAULT now(),
     resolved_at timestamptz
 );
--- TODO(Day 4): delete approvals.args once resolved, so raw args never outlive the decision.
+
+-- Day 4: Slack approvals. ALTERs (not a new CREATE) so an existing Supabase table upgrades in place.
+-- args is kept only while pending (the broker replays the call on Approve), then set to NULL.
+ALTER TABLE approvals ALTER COLUMN args DROP NOT NULL;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS expires_at      timestamptz;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS session_tainted boolean;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS result          jsonb;   -- tool output after Approve, for the polling agent
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS resolved_via    text;    -- 'slack:U0123' | 'admin-api' | 'timeout' | 'agent-cancel'
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS slack_channel   text;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS slack_ts        text;    -- message to update after a decision
+UPDATE approvals SET expires_at = created_at + interval '2 minutes' WHERE expires_at IS NULL;
+ALTER TABLE approvals ALTER COLUMN expires_at SET NOT NULL;
+CREATE INDEX IF NOT EXISTS approvals_status_idx ON approvals (status, created_at);
 
 -- Append-only, hash-chained audit log.
 -- hash = sha256(prev_hash || canonical_json(event)). Args are stored as a keyed hash only.
 CREATE TABLE IF NOT EXISTS audit_events (
     id              bigint PRIMARY KEY,          -- assigned by the broker, gap-free
     ts              text NOT NULL,               -- canonical UTC string, hashed as-is
-    event_type      text NOT NULL,               -- 'tool_call' | 'token_issued' | 'token_denied' | 'token_revoked' | 'agent_disabled' | 'agent_enabled'
+    event_type      text NOT NULL,               -- 'tool_call' | 'token_issued' | 'token_denied' | 'token_revoked' | 'agent_disabled' | 'agent_enabled' | 'approval_resolved' | 'approval_refused'
     agent_id        text,
     session_id      text,
     task_id         text,

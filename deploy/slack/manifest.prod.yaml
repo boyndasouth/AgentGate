@@ -1,0 +1,21 @@
+# Slack app for the DEPLOYED broker on Render: HTTP mode.
+# Replace the request_url host with your Render service URL before pasting.
+display_information:
+  name: AgentGate
+  description: Approve or deny risky AI agent actions
+  background_color: "#1f2937"
+features:
+  bot_user:
+    display_name: AgentGate
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://agentgate-broker.onrender.com/slack/events
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

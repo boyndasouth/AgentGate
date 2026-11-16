@@ -29,7 +29,7 @@ services:
 
   # Creates/upgrades OpenFGA's tables, then exits.
   fga-migrate:
-    image: openfga/openfga:${OPENFGA_VERSION:-latest}
+    image: openfga/openfga:${OPENFGA_VERSION:-v1.22.1}
     command: migrate
     environment:
       OPENFGA_DATASTORE_ENGINE: postgres
@@ -39,7 +39,7 @@ services:
         condition: service_healthy
 
   openfga:
-    image: openfga/openfga:${OPENFGA_VERSION:-latest}
+    image: openfga/openfga:${OPENFGA_VERSION:-v1.22.1}
     command: run
     environment:
       OPENFGA_DATASTORE_ENGINE: postgres

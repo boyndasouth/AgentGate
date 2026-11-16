@@ -156,9 +156,11 @@
 							const msg = err?.message ?? '';
 							rtWhy =
 								`Realtime ${status}${msg ? `: ${msg}` : ''}. ` +
-								(/jwt|token|issuer|signature|unauthori[sz]ed|claim/i.test(msg)
-									? `Supabase rejected the Auth0 token (issuer ${claims?.iss}). Check Authentication → Third-Party Auth → Auth0: tenant "${tenantOf(claims?.iss)}", region "${regionOf(claims?.iss)}".`
-									: 'Check that audit_events is in the supabase_realtime publication (deploy/supabase_ui.sql).');
+								(/transport|websocket|network|connect/i.test(msg)
+									? 'The browser could not open the Realtime socket: check PUBLIC_SUPABASE_URL (https://<ref>.supabase.co) and the anon key in Vercel, redeploy, or try without browser extensions.'
+									: /jwt|token|issuer|signature|unauthori[sz]ed|claim/i.test(msg)
+										? `Supabase rejected the Auth0 token (issuer ${claims?.iss}). Check Authentication → Third-Party Auth → Auth0: tenant "${tenantOf(claims?.iss)}", region "${regionOf(claims?.iss)}".`
+										: 'Check that audit_events is in the supabase_realtime publication (deploy/supabase_ui.sql).');
 							startPolling();
 						}
 					});

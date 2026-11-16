@@ -63,7 +63,7 @@ end $$;
 
 -- 6. You. Replace the placeholder, then run.
 insert into public.ui_admins (auth0_sub, email)
-values ('REPLACE_WITH_YOUR_AUTH0_SUB', 'you@example.com')
+values ('auth0|6afa1e1ed3444608d2161afa', 'shiwinfdo05@gmail.com')
 on conflict (auth0_sub) do nothing;
 
 -- Check:

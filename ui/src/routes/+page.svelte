@@ -20,10 +20,26 @@
 	let events = $state<AuditEvent[]>([]);
 	let feedError = $state<string | null>(null);
 	let mode = $state<FeedMode>('connecting');
+	/** Why the feed isn't on Realtime (shown under the badge). Empty when live. */
+	let rtWhy = $state('');
 	let fresh = $state(new Set<number>());
 	let brokenId = $state<number | null>(null);
 	let now = $state(Date.now());
 	let broker = $state<{ state: 'waking' | 'up' | 'down'; ms?: number; detail?: string }>({ state: 'waking' });
+
+	function decodeClaims(jwt: string): Record<string, unknown> | null {
+		try {
+			return JSON.parse(atob(jwt.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+		} catch {
+			return null;
+		}
+	}
+	// https://dev-abc.us.auth0.com/ → "dev-abc" / "us"
+	const tenantOf = (iss: unknown) => String(iss ?? '').replace(/^https?:\/\//, '').split('.')[0];
+	const regionOf = (iss: unknown) => {
+		const parts = String(iss ?? '').replace(/^https?:\/\//, '').split('.');
+		return parts.length > 3 ? parts[1] : '(none)';
+	};
 
 	async function loadAgents() {
 		const r = await api<Agent[]>('/api/agents');
@@ -106,7 +122,20 @@
 			await Promise.all([loadAgents(), loadApprovals(), pollEvents(false)]);
 
 			const rt = data.realtime;
-			if (rt?.token) {
+			const claims = rt?.token ? decodeClaims(rt.token) : null;
+			if (!rt) {
+				rtWhy = 'Realtime off: PUBLIC_SUPABASE_URL / PUBLIC_SUPABASE_ANON_KEY are not set on the server (Vercel: add them, then Redeploy).';
+				startPolling();
+			} else if (!rt.token) {
+				rtWhy = 'Realtime off: no Auth0 ID token in your session. Sign out and sign in again.';
+				startPolling();
+			} else if (claims?.role !== 'authenticated') {
+				rtWhy =
+					`Realtime off: your Auth0 ID token has no role=authenticated claim (issuer ${claims?.iss ?? '?'}). ` +
+					'Deploy the "Supabase role" Action, add it to Actions → Triggers → post-login, Apply, then sign out and in.';
+				startPolling();
+			} else {
+				rtWhy = 'Connecting to Supabase Realtime…';
 				// Supabase Third-Party Auth: the Auth0 ID token is the access token.
 				supabase = createClient(rt.url!, rt.key!, {
 					accessToken: async () => rt.token,
@@ -117,21 +146,31 @@
 					.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'audit_events' }, (payload) =>
 						ingest([payload.new as AuditEvent], true)
 					)
-					.subscribe((status) => {
+					.subscribe((status, err) => {
 						if (status === 'SUBSCRIBED') {
 							stopPolling();
 							mode = 'realtime';
+							rtWhy = '';
 							pollEvents(); // catch anything written while connecting
 						} else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+							const msg = err?.message ?? '';
+							rtWhy =
+								`Realtime ${status}${msg ? `: ${msg}` : ''}. ` +
+								(/jwt|token|issuer|signature|unauthori[sz]ed|claim/i.test(msg)
+									? `Supabase rejected the Auth0 token (issuer ${claims?.iss}). Check Authentication → Third-Party Auth → Auth0: tenant "${tenantOf(claims?.iss)}", region "${regionOf(claims?.iss)}".`
+									: 'Check that audit_events is in the supabase_realtime publication (deploy/supabase_ui.sql).');
 							startPolling();
 						}
 					});
 				// If Realtime hasn't connected in 8 s, poll meanwhile.
-				setTimeout(() => mode !== 'realtime' && startPolling(), 8000);
+				setTimeout(() => {
+					if (mode !== 'realtime') {
+						if (rtWhy.startsWith('Connecting')) rtWhy = 'Realtime: no answer from Supabase in 8 s (still trying). Check the Supabase URL/key.';
+						startPolling();
+					}
+				}, 8000);
 				// Slow safety net: RLS or a dropped socket can silently drop inserts.
 				resyncTimer = setInterval(() => mode === 'realtime' && pollEvents(), 20_000);
-			} else {
-				startPolling();
 			}
 		})();
 
@@ -182,7 +221,7 @@
 		</div>
 		<div class="col-right">
 			<DemoPanel enabled={data.demoEnabled} onactivity={() => mode === 'polling' && pollEvents()} />
-			<FeedPanel {events} {mode} error={feedError} {fresh} {brokenId} />
+			<FeedPanel {events} {mode} error={feedError} {fresh} {brokenId} note={rtWhy} />
 		</div>
 	</main>
 </div>

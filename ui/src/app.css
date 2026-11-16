@@ -131,3 +131,5 @@ tr.tainted td:first-child { box-shadow: inset 3px 0 0 var(--taint); }
 tr.fresh { animation: flash 2.5s ease-out; }
 tr.broken td { background: #450a0a !important; outline: 1px solid #ef4444; }
 @keyframes flash { from { background: #134e4a; } to { background: transparent; } }
+
+.rt-note { margin: -4px 0 8px; padding: 6px 8px; border: 1px dashed var(--line); border-radius: 6px; }

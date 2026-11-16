@@ -7,13 +7,15 @@
 		mode,
 		error,
 		fresh,
-		brokenId
+		brokenId,
+		note = ''
 	}: {
 		events: AuditEvent[];
 		mode: FeedMode;
 		error: string | null;
 		fresh: Set<number>;
 		brokenId: number | null;
+		note?: string;
 	} = $props();
 
 	let filter = $state<'all' | 'decisions' | 'tainted'>('all');
@@ -53,6 +55,7 @@
 		</div>
 	</header>
 
+	{#if note && mode !== 'realtime'}<p class="muted small rt-note">{note}</p>{/if}
 	{#if error}<p class="err">{error}</p>{/if}
 
 	<div class="table-wrap">

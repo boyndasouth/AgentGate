@@ -28,8 +28,9 @@ ui/build/
 Thumbs.db
 desktop.ini
 
-agentgate-day2.patch
-agentgate-day3.patch.env.agents
+# Patches are delivered outside the repo; never commit them.
+*.patch
+.env.agents
 .env.render
 .env.agents
 .env.render

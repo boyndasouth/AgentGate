@@ -2,12 +2,22 @@
 
 **An identity and permissions broker for AI agents.** Every agent gets short-lived, task-scoped credentials. Every tool call is checked against a relationship-based policy (OpenFGA). Risky actions wait for a human in Slack. Every decision lands in a hash-chained audit log. Once an agent reads untrusted content, its session is marked **tainted**, so a successful prompt injection ends up as a Slack ping instead of a data leak.
 
-<!-- DEMO VIDEO: edit this file on github.com, drag the .mp4 (≤100 MB) onto this line, commit. -->
-> 🎬 **90-second demo:** _video goes here_
-
 **Results (Day 7):** the gate stopped **18 of 20** prompt-injection attacks (7 blocked outright, 11 escalated to a human), assuming the model obeys every payload. It adds **+5.2 ms p50 / +6.5 ms p95** to an allowed tool call. [Details](#results)
 
 ---
+
+## Demo: six beats, three minutes
+
+Run from the admin UI's demo runner with Slack open beside it (scripted gate calls, so every run is the same; `scripts/demo_inject.ps1` does the injection beat from a terminal).
+
+| Beat | What happens |
+| --- | --- |
+| 1. Normal work | Finance pays a $40 invoice: **allowed** in a few milliseconds, logged in the live feed. |
+| 2. Limit hit | Finance tries $5,000: **escalated** to Slack. Deny, and the agent reports it was refused. |
+| 3. Injection | The researcher reads a blog post with hidden instructions to email the customer list outside. The session is **tainted**, so the mailer's email escalates to Slack instead of sending. |
+| 4. Tamper evidence | Edit that escalation row to "allow" directly in Supabase: **Verify chain** names the exact row. Restore it and the chain is intact again. |
+| 5. Kill switch | Revoke the mailer: the token it already holds fails on the very next call, with no restart. |
+| 6. The numbers | 18 of 20 injection attacks stopped; +6.5 ms p95 per call. |
 
 ## The problem
 

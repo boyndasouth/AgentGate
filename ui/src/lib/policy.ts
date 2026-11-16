@@ -4,7 +4,7 @@
 export type Grant = { tool: string; mode: 'direct' | 'approval'; note?: string };
 
 export const POLICY: Record<string, Grant[]> = {
-	researcher: [{ tool: 'read_web', mode: 'direct', note: 'taints the session' }],
+	researcher: [{ tool: 'read_web', mode: 'direct', note: 'taints the session; once tainted, example.com only' }],
 	mailer: [
 		{ tool: 'read_inbox', mode: 'direct', note: 'taints the session' },
 		{ tool: 'query_customers', mode: 'direct' },

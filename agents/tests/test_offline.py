@@ -9,6 +9,7 @@ Run: docker compose run --rm --entrypoint pytest agents -q agents/tests
 from __future__ import annotations
 
 import json
+import urllib.parse
 import uuid
 
 import httpx
@@ -77,6 +78,8 @@ class FakeGate:
             tainted = sid in self.tainted
             if tool not in tok["scopes"]:
                 decision, reason, code = "deny", "tool not in token scope", 403
+            elif tool == "read_web" and tainted and urllib.parse.urlsplit(args["url"]).hostname != "example.com":
+                decision, reason, code = "deny", "policy: session tainted; host not on the allowlist", 403
             elif tool == "transfer_funds" and (args["amount"] > 100 or tainted):
                 decision, reason, code = "escalate", "amount over limit or session tainted; needs approval", 202
             elif tool == "send_email" and tainted:

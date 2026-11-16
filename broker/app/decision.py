@@ -34,13 +34,14 @@ async def decide(
     amount: float,
     session_tainted: bool,
     tainted_by: str | None = None,
+    host: str = "",
 ) -> Decision:
     if tool not in token_scopes:
         return Decision("deny", f"tool '{tool}' is outside this task's token scopes")
 
     user, obj = f"agent:{agent_id}", f"tool:{tool}"
-    # Always send both keys: OpenFGA errors if a conditional tuple's parameter is missing.
-    context = {"amount": float(amount), "session_tainted": bool(session_tainted)}
+    # Always send every key: OpenFGA errors if a conditional tuple's parameter is missing.
+    context = {"amount": float(amount), "session_tainted": bool(session_tainted), "host": host}
 
     try:
         if await fga.check(user, "can_invoke", obj, context):
@@ -53,6 +54,11 @@ async def decide(
                 why.append(f"amount {amount:g}")
             detail = f" ({', '.join(why)})" if why else ""
             return Decision("escalate", f"policy: needs human approval{detail}")
+        if session_tainted and await fga.check(user, "can_request_approval", obj, {**context, "session_tainted": False}):
+            # Only the taint stands in the way, and there's no approval path (read_web, G03).
+            src = f" by {tainted_by}" if tainted_by else ""
+            return Decision("deny", f"policy: session tainted{src}; host '{host or '?'}' is not on the "
+                                    f"allowlist for '{tool}' in a tainted session")
         return Decision("deny", f"policy: agent '{agent_id}' has no grant on '{tool}'")
     except PolicyEngineError as exc:
         return Decision("deny", f"policy engine unavailable, failing closed: {exc}", policy_error=True)
@@ -64,5 +70,5 @@ async def may_hold_scope(fga: FGAClient, agent_id: str, tool: str) -> bool:
     check later applies the real amount and taint."""
     return await fga.check(
         f"agent:{agent_id}", "can_request_approval", f"tool:{tool}",
-        {"amount": 0.0, "session_tainted": False},
+        {"amount": 0.0, "session_tainted": False, "host": ""},
     )

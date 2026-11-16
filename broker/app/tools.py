@@ -10,6 +10,7 @@ broker's environment here, after the gate has allowed the call.
 
 from __future__ import annotations
 
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -131,12 +132,13 @@ class Tool:
     run: Callable[[Any], Awaitable[dict]]
     taints: bool = False                      # returns untrusted outside content
     amount_field: str | None = None           # arg sent to OpenFGA as `amount`
+    url_field: str | None = None              # arg whose hostname is sent to OpenFGA as `host` (Day 7)
 
 
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in (
-        Tool("read_web", ReadWebArgs, read_web, taints=True),
+        Tool("read_web", ReadWebArgs, read_web, taints=True, url_field="url"),
         Tool("read_inbox", ReadInboxArgs, read_inbox, taints=True),
         Tool("send_email", SendEmailArgs, send_email),
         Tool("transfer_funds", TransferFundsArgs, transfer_funds, amount_field="amount"),
@@ -152,3 +154,19 @@ def parse_args(tool: Tool, raw: dict) -> Any:
 
 def amount_of(tool: Tool, parsed: Any) -> float:
     return float(getattr(parsed, tool.amount_field)) if tool.amount_field else 0.0
+
+
+def host_of(tool: Tool, parsed: Any) -> str:
+    """Day 7 (G03): the URL's hostname for OpenFGA's `host` context, lowercased, trailing dot
+    dropped. urlsplit takes the real host from tricks like https://example.com@evil.example/.
+    '' for tools without a URL, non-http(s) schemes and unparseable URLs; a tainted session
+    can never match '' against the allowlist, so those fail closed."""
+    if not tool.url_field:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(str(getattr(parsed, tool.url_field)).strip())
+        if parts.scheme.lower() not in ("http", "https"):
+            return ""
+        return (parts.hostname or "").rstrip(".")
+    except ValueError:
+        return ""

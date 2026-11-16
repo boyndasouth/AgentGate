@@ -6,7 +6,7 @@ model
 #   can_invoke            -> allow
 #   can_request_approval  -> escalate to a human in Slack
 #   neither               -> deny
-# Always send BOTH `amount` and `session_tainted` in the check context:
+# Always send `amount`, `session_tainted` and `host` in the check context:
 # OpenFGA errors when a conditional tuple's parameter is missing.
 
 type user
@@ -18,7 +18,7 @@ type agent
 type tool
   relations
     # Act immediately, optionally only while a condition holds.
-    define direct_invoker: [agent, agent with untainted, agent with within_limit_untainted]
+    define direct_invoker: [agent, agent with untainted, agent with within_limit_untainted, agent with untainted_or_allowed_host]
     # Act only after a human approves.
     define approval_invoker: [agent]
     # Humans who may approve escalations for this tool.
@@ -36,4 +36,11 @@ condition untainted(session_tainted: bool) {
 # so the taint check is folded in here; a tainted session never moves money alone.
 condition within_limit_untainted(amount: double, max_amount: double, session_tainted: bool) {
   amount <= max_amount && !session_tainted
+}
+
+# Day 7 (closes G03): reading a URL also sends data out, in the URL itself. Once the session
+# is tainted, only hosts on the tuple's allowlist may be read (exact match, no wildcards).
+# `host` is the URL's hostname, parsed by the broker; '' for tools without a URL.
+condition untainted_or_allowed_host(session_tainted: bool, host: string, allowed_hosts: list<string>) {
+  !session_tainted || host in allowed_hosts
 }

@@ -34,7 +34,7 @@ from .fga import FGAClient, PolicyEngineError
 from .keys import SigningKey
 from .slack import SLACK_EVENTS_PATH, SlackApprovals
 from .tokens import TokenError, check_not_revoked, decode_token, issue_token
-from .tools import TOOLS, amount_of, parse_args
+from .tools import TOOLS, amount_of, host_of, parse_args
 
 log = logging.getLogger("agentgate")
 
@@ -365,7 +365,7 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     # 5. Policy decision, with the session's taint as OpenFGA context.
     decision = await decide(state.fga, agent_id=claims.agent_id, tool=name, token_scopes=claims.scopes,
                             amount=amount_of(tool, parsed), session_tainted=st.tainted,
-                            tainted_by=st.tainted_by)
+                            tainted_by=st.tainted_by, host=host_of(tool, parsed))
 
     if decision.outcome == "deny":
         ev = await record("deny", decision.reason, args_hash=args_hash)

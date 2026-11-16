@@ -91,9 +91,11 @@ def main() -> None:
     })
     log(f"store={store} model={model} tuples={len(tuples)}")
 
-    clean = {"amount": 40.0, "session_tainted": False}
-    big = {"amount": 5000.0, "session_tainted": False}
-    tainted = {"amount": 0.0, "session_tainted": True}
+    clean = {"amount": 40.0, "session_tainted": False, "host": ""}
+    big = {"amount": 5000.0, "session_tainted": False, "host": ""}
+    tainted = {"amount": 0.0, "session_tainted": True, "host": ""}
+    tainted_ok_host = {"amount": 0.0, "session_tainted": True, "host": "example.com"}
+    tainted_bad_host = {"amount": 0.0, "session_tainted": True, "host": "collect.partner-archive.example"}
     expectations = [
         ("agent:finance", "can_invoke", "tool:transfer_funds", clean, True),
         ("agent:finance", "can_invoke", "tool:transfer_funds", big, False),
@@ -101,6 +103,8 @@ def main() -> None:
         ("agent:mailer", "can_invoke", "tool:send_email", tainted, False),
         ("agent:mailer", "can_request_approval", "tool:send_email", tainted, True),
         ("agent:researcher", "can_request_approval", "tool:transfer_funds", clean, False),
+        ("agent:researcher", "can_invoke", "tool:read_web", tainted_ok_host, True),
+        ("agent:researcher", "can_invoke", "tool:read_web", tainted_bad_host, False),
     ]
     for user, rel, obj, ctx, want in expectations:
         got = check(store, model, user, rel, obj, ctx)

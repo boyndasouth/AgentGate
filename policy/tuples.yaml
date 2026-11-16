@@ -20,10 +20,15 @@
   relation: approver
   object: tool:transfer_funds
 
-# --- researcher: browses freely (browsing taints the session) ---
+# --- researcher: browses freely in a clean session (browsing taints the session);
+#     once tainted, only allowlisted hosts (a URL can carry data out: G03) ---
 - user: agent:researcher
   relation: direct_invoker
   object: tool:read_web
+  condition:
+    name: untainted_or_allowed_host
+    context:
+      allowed_hosts: [example.com]
 
 # --- mailer: reads inbox and customers; sends freely only in a clean session ---
 - user: agent:mailer

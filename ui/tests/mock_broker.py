@@ -68,7 +68,7 @@ class H(BaseHTTPRequestHandler):
                 i = audit(event_type="tool_call", agent_id=ag, tool=tool, decision="deny", reason="token revoked (kill switch)", session_tainted=s["tainted"])
                 return self.send(403, {"decision": "deny", "reason": "token revoked (kill switch)", "tool": tool, "audit_id": i})
             args = b.get("args", {})
-            esc = (tool == "transfer_funds" and (args.get("amount", 0) > 100 or s["tainted"])) or (tool == "send_email" and (s["tainted"] or not str(args.get("to", "")).lower().endswith("@agentgate.example")))
+            esc = (tool == "transfer_funds" and (args.get("amount", 0) > 100 or s["tainted"] or args.get("to_account") != "acct_acme_supplies")) or (tool == "send_email" and (s["tainted"] or not str(args.get("to", "")).lower().endswith("@agentgate.example")))
             if esc:
                 aid = str(uuid.uuid4()); reason = "session tainted by read_web" if s["tainted"] else ("recipient is not on the allowlist" if tool == "send_email" else "amount over limit")
                 approvals[aid] = {"id": aid, "agent_id": ag, "tool": tool, "reason": reason, "status": "pending", "session_tainted": s["tainted"], "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 120)), "args": args}

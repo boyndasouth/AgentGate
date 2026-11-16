@@ -91,17 +91,20 @@ def main() -> None:
     })
     log(f"store={store} model={model} tuples={len(tuples)}")
 
-    clean = {"amount": 40.0, "session_tainted": False, "host": "", "recipient_domain": ""}
-    big = {"amount": 5000.0, "session_tainted": False, "host": "", "recipient_domain": ""}
-    tainted = {"amount": 0.0, "session_tainted": True, "host": "", "recipient_domain": ""}
-    tainted_ok_host = {"amount": 0.0, "session_tainted": True, "host": "example.com", "recipient_domain": ""}
-    tainted_bad_host = {"amount": 0.0, "session_tainted": True, "host": "collect.partner-archive.example", "recipient_domain": ""}
-    internal = {"amount": 0.0, "session_tainted": False, "host": "", "recipient_domain": "agentgate.example"}
-    outside = {"amount": 0.0, "session_tainted": False, "host": "", "recipient_domain": "partner-archive.example"}
+    clean = {"amount": 40.0, "session_tainted": False, "host": "", "recipient_domain": "", "payee": "acct_acme_supplies"}
+    big = {"amount": 5000.0, "session_tainted": False, "host": "", "recipient_domain": "", "payee": "acct_acme_supplies"}
+    tainted = {"amount": 0.0, "session_tainted": True, "host": "", "recipient_domain": "", "payee": ""}
+    tainted_ok_host = {"amount": 0.0, "session_tainted": True, "host": "example.com", "recipient_domain": "", "payee": ""}
+    tainted_bad_host = {"amount": 0.0, "session_tainted": True, "host": "collect.partner-archive.example", "recipient_domain": "", "payee": ""}
+    internal = {"amount": 0.0, "session_tainted": False, "host": "", "recipient_domain": "agentgate.example", "payee": ""}
+    outside = {"amount": 0.0, "session_tainted": False, "host": "", "recipient_domain": "partner-archive.example", "payee": ""}
+    new_payee = {**clean, "payee": "ACCT-99-ATTACKER"}
     expectations = [
         ("agent:finance", "can_invoke", "tool:transfer_funds", clean, True),
         ("agent:finance", "can_invoke", "tool:transfer_funds", big, False),
         ("agent:finance", "can_request_approval", "tool:transfer_funds", big, True),
+        ("agent:finance", "can_invoke", "tool:transfer_funds", new_payee, False),
+        ("agent:finance", "can_request_approval", "tool:transfer_funds", new_payee, True),
         ("agent:mailer", "can_invoke", "tool:send_email", tainted, False),
         ("agent:mailer", "can_request_approval", "tool:send_email", tainted, True),
         ("agent:researcher", "can_request_approval", "tool:transfer_funds", clean, False),

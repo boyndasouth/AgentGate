@@ -1,4 +1,4 @@
-"""Run the 21-case prompt-injection suite through the gate and report the block rate.
+"""Run the 22-case prompt-injection suite through the gate and report the block rate.
 
   python eval/injection_suite.py                    # local broker (.env, http://localhost:8000)
   python eval/injection_suite.py --target render    # deployed broker (.env.render)

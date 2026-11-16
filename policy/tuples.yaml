@@ -49,14 +49,16 @@
   relation: approval_invoker
   object: tool:send_email
 
-# --- finance: pays small invoices alone in a clean session; otherwise a human decides ---
+# --- finance: pays small invoices alone, in a clean session, to a known payee (closes G04);
+#     anything else goes to a human ---
 - user: agent:finance
   relation: direct_invoker
   object: tool:transfer_funds
   condition:
-    name: within_limit_untainted
+    name: within_limit_known_payee
     context:
       max_amount: 100
+      allowed_payees: [acct_acme_supplies]
 - user: agent:finance
   relation: approval_invoker
   object: tool:transfer_funds

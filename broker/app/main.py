@@ -35,7 +35,7 @@ from .fga import FGAClient, PolicyEngineError
 from .keys import SigningKey
 from .slack import SLACK_EVENTS_PATH, SlackApprovals
 from .tokens import TokenError, check_not_revoked, decode_token, issue_token
-from .tools import TOOLS, amount_of, host_of, parse_args, recipient_domain_of
+from .tools import TOOLS, allowlist_reason, amount_of, host_of, parse_args, payee_of, recipient_domain_of
 
 log = logging.getLogger("agentgate")
 
@@ -387,8 +387,8 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     decision = await decide(state.fga, agent_id=claims.agent_id, tool=name, token_scopes=claims.scopes,
                             amount=amount_of(tool, parsed), session_tainted=st.tainted,
                             tainted_by=st.tainted_by, host=host_of(tool, parsed),
-                            recipient_domain=recipient_domain_of(tool, parsed),
-                            has_recipient=bool(tool.recipient_field))
+                            recipient_domain=recipient_domain_of(tool, parsed), payee=payee_of(tool, parsed),
+                            allowlist_reason=allowlist_reason(tool, parsed))
 
     if decision.outcome == "deny":
         ev = await record("deny", decision.reason, args_hash=args_hash)
@@ -540,7 +540,7 @@ async def slack_events(scope: dict, receive: Any, send: Any) -> None:
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.5.0",
+    version="0.6.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),

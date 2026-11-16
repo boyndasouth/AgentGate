@@ -72,7 +72,7 @@ $fin = $t.Body.access_token
 $session = $t.Body.session_id
 
 # --- 2. ALLOW: $40 invoice ---------------------------------------------------
-$r = Invoke-Tool $fin "transfer_funds" @{ amount = 40; to_account = "vendor-1042"; memo = "Invoice #1042" }
+$r = Invoke-Tool $fin "transfer_funds" @{ amount = 40; to_account = "acct_acme_supplies"; memo = "Invoice #1042" }
 Show-Step "ALLOW    finance pays a `$40 invoice" $r 200
 if ($r.Body.result) { Write-Host "       result: $($r.Body.result | ConvertTo-Json -Compress)" }
 
@@ -96,7 +96,7 @@ Show-Step "DENY     researcher calls transfer_funds with a read_web token" $r 40
 # --- 6. Kill switch ----------------------------------------------------------
 $r = Invoke-Gate POST "/agents/finance/disable" @{ reason = "demo kill switch" } $admin
 Show-Step "Kill switch: finance disabled" $r 200
-$r = Invoke-Tool $fin "transfer_funds" @{ amount = 40; to_account = "vendor-1042" }
+$r = Invoke-Tool $fin "transfer_funds" @{ amount = 40; to_account = "acct_acme_supplies" }
 Show-Step "DENY     finance's existing token is dead right away" $r 401
 $r = Invoke-Gate POST "/agents/finance/enable" $null $admin
 Show-Step "Finance re-enabled (old tokens stay revoked)" $r 200

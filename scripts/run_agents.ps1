@@ -3,7 +3,7 @@ Runs the demo orchestrator in Docker against the local or the Render broker.
 
   .\scripts\run_agents.ps1 pay                 # local broker (docker compose)
   .\scripts\run_agents.ps1 -Target render pay  # deployed broker
-  .\scripts\run_agents.ps1 -Target render -Agent finance 'Pay $12 to Acme Supplies'
+  .\scripts\run_agents.ps1 -Target render -Agent finance 'Pay $12 to account acct_acme_supplies'
 
 GOOGLE_API_KEY (+ optional AGENT_MODEL, GROQ_API_KEY) come from .env.agents, kept apart from the broker's .env.
 Orchestrator key: .env (local) or .env.render (render, which also holds AGENTGATE_URL).

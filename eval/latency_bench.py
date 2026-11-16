@@ -16,7 +16,7 @@ Method
 
 Paths
   allow        mailer  query_customers {limit:1}       1 OpenFGA check + audit append
-  allow_amount finance transfer_funds {amount:40}      1 conditional check (amount + taint)
+  allow_amount finance transfer_funds {amount:40}      1 conditional check (amount + taint + payee)
   deny_scope   mailer  transfer_funds (not in token)   no OpenFGA; deny + audit append
   mint         POST /tokens (2 scopes, new session)    2 OpenFGA checks + 3 inserts + audit
                (measured every 5th round only, it creates a session each time)
@@ -103,7 +103,7 @@ def main() -> int:
             ("baseline", lambda: gate.request("GET", "/.well-known/jwks.json"), 200),
             ("allow", lambda: gate.tool(tok.mailer, "query_customers", {"limit": 1}), 200),
             ("allow_amount", lambda: gate.tool(tok.finance, "transfer_funds",
-                                               {"amount": 40, "to_account": "ACCT-BENCH", "memo": "bench"}), 200),
+                                               {"amount": 40, "to_account": "acct_acme_supplies", "memo": "bench"}), 200),
             ("deny_scope", lambda: gate.tool(tok.mailer, "transfer_funds",
                                              {"amount": 40, "to_account": "ACCT-BENCH"}), 403),
         ]

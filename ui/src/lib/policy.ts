@@ -12,7 +12,7 @@ export const POLICY: Record<string, Grant[]> = {
 		{ tool: 'send_email', mode: 'approval', note: 'tainted session or outside recipient' }
 	],
 	finance: [
-		{ tool: 'transfer_funds', mode: 'direct', note: '≤ $100, clean session' },
+		{ tool: 'transfer_funds', mode: 'direct', note: '≤ $100, clean session, to acct_acme_supplies only' },
 		{ tool: 'transfer_funds', mode: 'approval', note: 'anything else' }
 	]
 };

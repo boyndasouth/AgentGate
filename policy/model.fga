@@ -6,7 +6,7 @@ model
 #   can_invoke            -> allow
 #   can_request_approval  -> escalate to a human in Slack
 #   neither               -> deny
-# Always send `amount`, `session_tainted`, `host` and `recipient_domain` in the check context:
+# Always send `amount`, `session_tainted`, `host`, `recipient_domain` and `payee` in the check context:
 # OpenFGA errors when a conditional tuple's parameter is missing.
 
 type user
@@ -18,7 +18,7 @@ type agent
 type tool
   relations
     # Act immediately, optionally only while a condition holds.
-    define direct_invoker: [agent, agent with untainted, agent with within_limit_untainted, agent with untainted_or_allowed_host, agent with untainted_allowed_recipient]
+    define direct_invoker: [agent, agent with untainted, agent with within_limit_known_payee, agent with untainted_or_allowed_host, agent with untainted_allowed_recipient]
     # Act only after a human approves.
     define approval_invoker: [agent]
     # Humans who may approve escalations for this tool.
@@ -32,10 +32,12 @@ condition untainted(session_tainted: bool) {
   !session_tainted
 }
 
-# Small amount AND a clean session. One tuple can carry only one condition,
-# so the taint check is folded in here; a tainted session never moves money alone.
-condition within_limit_untainted(amount: double, max_amount: double, session_tainted: bool) {
-  amount <= max_amount && !session_tainted
+# Small amount AND a clean session AND a payee on the tuple's allowlist. One tuple can carry
+# only one condition, so all three checks live here: a tainted session never moves money alone,
+# and (Day 9, closes G04) neither does a clean one paying an account nobody has approved before.
+# `payee` is the to_account argument exactly as sent (exact match, no normalising).
+condition within_limit_known_payee(amount: double, max_amount: double, session_tainted: bool, payee: string, allowed_payees: list<string>) {
+  amount <= max_amount && !session_tainted && payee in allowed_payees
 }
 
 # Day 7 (closes G03): reading a URL also sends data out, in the URL itself. Once the session

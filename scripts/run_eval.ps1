@@ -1,7 +1,7 @@
 <#
 Day 7 evals, run in a throwaway python:3.12-slim container (stdlib only, nothing to install).
 
-  .\scripts\run_eval.ps1 suite                     # 21-case injection suite, local broker
+  .\scripts\run_eval.ps1 suite                     # 22-case injection suite, local broker
   .\scripts\run_eval.ps1 bench                     # latency benchmark, local broker (300 rounds)
   .\scripts\run_eval.ps1 suite -Target render      # against the deployed broker (.env.render)
   .\scripts\run_eval.ps1 bench -Target render -- -n 100

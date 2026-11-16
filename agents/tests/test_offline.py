@@ -80,7 +80,7 @@ class FakeGate:
                 decision, reason, code = "deny", "tool not in token scope", 403
             elif tool == "read_web" and tainted and urllib.parse.urlsplit(args["url"]).hostname != "example.com":
                 decision, reason, code = "deny", "policy: session tainted; host not on the allowlist", 403
-            elif tool == "transfer_funds" and (args["amount"] > 100 or tainted):
+            elif tool == "transfer_funds" and (args["amount"] > 100 or tainted or args["to_account"] != "acct_acme_supplies"):
                 decision, reason, code = "escalate", "amount over limit or session tainted; needs approval", 202
             elif tool == "send_email" and tainted:
                 decision, reason, code = "escalate", "policy: needs human approval (session tainted by read_web)", 202
@@ -162,7 +162,7 @@ def gate_and_fake():
 async def _run(scenario: str, gate: GateClient, models: dict[str, FunctionModel]) -> int:
     with team.researcher.override(model=models.get("researcher", scripted("read_web", {"url": "x"}))), \
          team.mailer.override(model=models.get("mailer", scripted("send_email", {"to": "a", "subject": "s", "body": "b"}))), \
-         team.finance.override(model=models.get("finance", scripted("transfer_funds", {"amount": 40, "to_account": "Acme"}))):
+         team.finance.override(model=models.get("finance", scripted("transfer_funds", {"amount": 40, "to_account": "acct_acme_supplies"}))):
         async with gate:
             return await orchestrator.run_plan(orchestrator.SCENARIOS[scenario], gate)
 

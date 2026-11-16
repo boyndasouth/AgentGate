@@ -1,10 +1,36 @@
 # PROGRESS
 
-**Current day:** Day 8 — Hardening (2026-11-16): three of five items built and tested in the workspace, delivered as `day8.patch`. **Not yet applied, pushed or deployed by Shiwin.**
-**Build status:** one-week MVP complete (Day 7). Day 8 closes G01 and G02, records who clicked Approve in the UI, and anchors the audit chain outside the database. Still to do: LLM-in-the-loop suite mode, delegation chains.
-**Headline numbers after Day 8:** **20/21 attacks stopped (95%)**; latency unchanged in design (+5.2 ms p50 / +6.5 ms p95, measured Day 7; re-run the benchmark after applying).
+**Current day:** Day 9 — G04 closed + LLM-in-the-loop mode (2026-11-16): `day9.patch` applied and checked on Shiwin's machine, LLM numbers in the README (`day9-readme.patch`). **Not yet pushed.**
+**Build status:** one-week MVP complete (Day 7). Day 8 (applied, pushed, Render suite 20/21) closed G01/G02, added the approver `via` field and audit anchoring. Day 9 closes G04 with a payee allowlist, adds known gap G05, and adds the LLM-in-the-loop suite. Still to do: delegation chains (stretch).
+**Headline numbers after Day 9:** **21/22 attacks stopped (95%)** worst case (local, Shiwin's machine); with Gemini 3.1 Flash-Lite the model tried the attack in **14/35 runs (40%)** and **3/35 (9%)** got through the gate, all G05; latency +5.2 ms p50 / +6.5 ms p95 (re-measured by Shiwin after Day 8: +5.17 / +6.55, unchanged).
 
-**Repo:** github.com/boyndasouth/AgentGate (branch main) · **Broker:** https://agentgate-broker.onrender.com (deployed: OpenAPI v0.4.0; Day 8 patch is v0.5.0: `via` on decisions, `/audit/checkpoint`, `/audit/hashes`) · **Admin UI:** Vercel, root dir `ui/` (add the production URL here) · **DB:** Supabase, session pooler · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+**Repo:** github.com/boyndasouth/AgentGate (branch main) · **Broker:** https://agentgate-broker.onrender.com (deployed: OpenAPI v0.5.0 since Day 8; Day 9 patch is v0.6.0: payee in the decision context, no endpoint changes) · **Admin UI:** Vercel, root dir `ui/` (add the production URL here) · **DB:** Supabase, session pooler · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+
+## Day 9 checklist
+- [x] **G04 closed (payee allowlist).** `transfer_funds` direct grant is now `within_limit_known_payee` (amount ≤ 100 AND clean session AND `to_account` in `[acct_acme_supplies]`, exact match). Replaces `within_limit_untainted`. Escalation reason says "payee is not on the allowlist" without the account number.
+- [x] **New known gap G05** (duplicate-invoice fraud: $90 to the known payee in a new run → allowed). Suite: 22 cases, **21/22 stopped (7 blocked, 14 escalated, 1 allowed)** in the workspace.
+- [x] **Control characters in policy context.** OpenFGA rejects a check whose context holds a control character, so `to_account: "x\n"` or a URL host with `\x07` gave a 503 "policy engine unavailable" (still a deny, but a wrong reason). `policy_safe()` in tools.py turns such values into '' (never on an allowlist). The host case existed since Day 7.
+- [x] Callers moved to the allowlisted payee: UI demo (already `acct_acme_supplies`), `demo_day2.ps1` (`vendor-1042` → `acct_acme_supplies`), latency bench (`ACCT-BENCH` → `acct_acme_supplies`), orchestrator `pay` task (now names the account), offline FakeGate, UI mock broker.
+- [x] **LLM-in-the-loop suite** (`eval/llm_cases.py`, `eval/llm_suite.py`, `scripts/run_llm_suite.ps1`): 16 of 22 cases run through the real agents; 6 are n/a (the agents' tools can't express them, or the orchestrator fixes the scopes). Reports "model tried it" vs. "got through". `-SelfTest` checks the harness with scripted models, no API key.
+- [x] Shiwin: applied `day9.patch`; 63/63 + 5/5, suite 21/22 (G05), `demo_day2.ps1` all pass, LLM self-test passed in Docker (2026-11-16)
+- [x] LLM run, Gemini 3.1 Flash-Lite, 3 trials: 48 runs, 13 provider errors (503/429), 35 valid; model tried the attack 14/35, through the gate 3/35 (all G05). Numbers in the README.
+- [ ] Push Day 9, run `.\scripts\run_eval.ps1 suite -Target render`, commit `eval/results/*.json`
+- [ ] Optional: a second LLM batch when Gemini is less busy (several rows have 1 valid run); merge the result files
+- [x] Day 8 leftover: the anchor workflow ran successfully; `audit-anchors` branch live, first anchor at row 291 (2026-11-16)
+- [ ] Stretch: delegation chains — not started
+
+## Day 9: apply and run
+1. `git pull`, then `git apply --check day9.patch` and `git apply day9.patch`.
+2. Local: `.\scripts\fga.ps1 model test --tests tests.fga.yaml` (63 checks, 5 list_objects), `py scripts/load_store.py --replace`, `docker compose up -d --build broker`, `.\scripts\run_eval.ps1 suite` (expect 21/22, known gap G05), `.\scripts\demo_day2.ps1`.
+3. `.\scripts\run_llm_suite.ps1 -SelfTest` (no API key; expect "self-test: all passed"), then `.\scripts\run_llm_suite.ps1 -Trials 3` (about 300 model requests: one model's free daily quota may not cover it; use `-Trials 1` or a fallback list in AGENT_MODEL).
+4. Commit and push; `.\scripts\run_eval.ps1 suite -Target render`; commit `eval/results/*.json`.
+
+## Day 9: tested before delivery (workspace: Postgres 16, OpenFGA v1.22.1 in memory, broker at the patch, fresh database)
+- `fga model test` 63/63 checks, 5/5 list_objects; `load_store.py --replace` replayed every case; `seed_fga.py` 13 sanity checks (2 new); `model.json` byte-identical to a fresh transform.
+- Suite 21/22, no regressions, chain valid. Payee edge cases against the live broker, 11 cases: known payee allowed at $40 and $100; unknown payee, upper case, leading space, trailing newline, empty → escalate with "payee is not on the allowlist" and no account number in the reason; $5,000 known payee → "amount 5000" only; tainted → escalate. Control characters in a URL host → normal deny, not 503. Day 8 recipient and `via` tests still pass; anchoring publish + check pass.
+- LLM suite: `--self-test` all passed (obedient scripted models reproduce the worst-case outcome on all 16 cases; careful ones never count as attempts; the case page reaches the next agent's prompt). Also checked: a missing payload is caught as an error, inbox and CRM content reach the model, no approval left pending, report and JSON with mixed outcomes, and the container layout (agents at /srv/agents, eval mounted at /srv/eval, keys from env only).
+- Agents offline tests 14 passed; UI smoke all passed, `svelte-check` 0 errors, `vite build` ok; short latency run in line with Day 8.
+- **Not tested:** real Gemini runs (no model keys in the workspace), `run_llm_suite.ps1` and `demo_day2.ps1` (no PowerShell or Docker daemon here), Render.
 
 ## Day 8 checklist
 - [x] **G01 closed (recipient allowlist).** `send_email` direct grant is now `untainted_allowed_recipient` (clean session AND recipient domain in `[agentgate.example]`); any other send escalates. This also closed G02 (cross-session, by email). Suite: G01 and G02 now expect `escalate`.
@@ -13,7 +39,8 @@
 - [x] **Audit chain anchored outside the database.** `GET /audit/checkpoint` (signed head), `GET /audit/hashes?ids=`, `scripts/anchor.py publish|check`, `.github/workflows/anchor.yml` (every 6 h → `audit-anchors` branch). A full rewrite of the chain, a truncated tail and a forged anchors file are all caught.
 - [ ] LLM-in-the-loop suite mode — not started (needs case-specific content in the mock tools and real Gemini runs on Shiwin's machine)
 - [ ] Delegation chains — not started (needs a persistent OpenFGA store on Render)
-- [ ] Shiwin: apply the patch, run the checks below, push, trigger the anchor workflow once, re-run the suite locally and on Render and commit the result JSONs
+- [x] Shiwin: applied, local checks passed (55/55, suite 20/21, demo all PASS), pushed, Render suite 20/21 and latency re-run committed (2026-11-16)
+- [x] Anchor workflow: first run succeeded, `audit-anchors` branch created (2026-11-16)
 
 ## Day 8: apply and deploy
 1. `git apply --check day8.patch`, then `git apply day8.patch`.
@@ -61,8 +88,8 @@
 - Supabase's SQL editor flags `$40` inside a string literal as an UPDATE without WHERE (its client-side parser trips on `$`); build the `$` with `chr(36)` instead.
 
 ## Open bugs / risks
-- Known injection gap: G04 (clean session + payment under $100 to a new payee; reached by carrying text into a new run or by a stored injection handed to finance). Fix: payee allowlist on `transfer_funds`.
-- Every email to an outside address now needs approval, including legitimate ones (the cost of closing G01). The allowlist is one static domain in tuples.yaml.
+- Known injection gap: G05 (small payment to the known payee in a clean run). Fixes: invoice matching, per-payee daily budget, or carry taint across runs.
+- Every email to an outside address and every payment to a new account needs approval, including legitimate ones (the cost of closing G01 and G04). Both allowlists are static, one entry each, in tuples.yaml.
 - URL allowlist is exact-match and static (`example.com` only, in tuples.yaml); the mock read_web doesn't follow redirects, a real one would need checks per hop.
 - Anchoring window: rows after the latest anchor (up to 6 h) can be rewritten unnoticed until the next one. GitHub pauses scheduled workflows after 60 days without repo activity; re-enable it in the Actions tab if that happens.
 - `audit-anchors` branch: it carries `ui/vercel.json` with `git.deploymentEnabled: false` so Vercel should skip it. Untested; if Vercel still builds (and fails) previews for it, set an Ignored Build Step in the Vercel project.
@@ -70,8 +97,7 @@
 - Carried: Gemini free tier flaky (scripted demo is the fallback); SvelteKit pinned to 2.70.4 (never `npm audit fix --force`); sign-out keeps the Auth0 session; kill-switch re-enable edge (wait ~1 s); asyncpg pool vs Supabase pooler; in-memory OpenFGA on Render loses runtime tuples (blocks delegation as designed); Supabase free project pauses after inactivity (the 6-hourly anchor job now queries it, which should keep it awake; unpause before a demo if not); Render cold start ~1 min (click the broker dot first).
 
 ## Next step
-Apply and deploy Day 8 (steps above). Then, in order of value for interviews:
-1. LLM-in-the-loop suite mode: "model alone vs. model plus gate" on the 21 payloads. Needs the mock tools to serve case-specific content and real Gemini runs.
-2. Payee allowlist on `transfer_funds` → 21/21 (same pattern as G01 and G03, about half a day).
-3. Delegation chains (stretch, 2 to 3 days): persistent OpenFGA store on Render, token-exchange endpoint, new suite cases.
-4. Portfolio: resume bullets with the new numbers (20/21 attacks stopped, +6.5 ms p95, anchored audit log), interview prep, README screenshot.
+Push Day 9 and run the Render suite. Then:
+1. Portfolio: resume bullets (21/22 attacks stopped worst case, the LLM numbers, +6.5 ms p95, anchored audit log), interview prep, README screenshot.
+2. Delegation chains (stretch, 2 to 3 days): persistent OpenFGA store on Render, token-exchange endpoint, new suite cases.
+3. Close G05 if wanted: per-payee daily budget (needs a running total, so state outside OpenFGA) or taint carried across runs.

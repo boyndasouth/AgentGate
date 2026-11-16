@@ -3,7 +3,7 @@
 Each tool has a typed argument struct (validated before the policy check) and a
 `taints` flag: tools that return untrusted outside content. After any successful call
 to a tainting tool, the gate marks the whole session tainted (Day 5, see taint.py).
-`amount_field`, `url_field` and `recipient_field` name the arguments the policy looks at.
+`amount_field`, `url_field`, `recipient_field` and `payee_field` name the arguments the policy looks at.
 
 Agents never see tool API keys. A real integration would read its key from the
 broker's environment here, after the gate has allowed the call.
@@ -12,6 +12,7 @@ broker's environment here, after the gate has allowed the call.
 from __future__ import annotations
 
 import re
+import unicodedata
 import urllib.parse
 import uuid
 from dataclasses import dataclass
@@ -136,6 +137,7 @@ class Tool:
     amount_field: str | None = None           # arg sent to OpenFGA as `amount`
     url_field: str | None = None              # arg whose hostname is sent to OpenFGA as `host` (Day 7)
     recipient_field: str | None = None        # arg whose domain is sent to OpenFGA as `recipient_domain` (Day 8)
+    payee_field: str | None = None            # arg sent to OpenFGA as `payee`, exactly as given (Day 9)
 
 
 TOOLS: dict[str, Tool] = {
@@ -144,7 +146,7 @@ TOOLS: dict[str, Tool] = {
         Tool("read_web", ReadWebArgs, read_web, taints=True, url_field="url"),
         Tool("read_inbox", ReadInboxArgs, read_inbox, taints=True),
         Tool("send_email", SendEmailArgs, send_email, recipient_field="to"),
-        Tool("transfer_funds", TransferFundsArgs, transfer_funds, amount_field="amount"),
+        Tool("transfer_funds", TransferFundsArgs, transfer_funds, amount_field="amount", payee_field="to_account"),
         Tool("query_customers", QueryCustomersArgs, query_customers),
     )
 }
@@ -170,7 +172,7 @@ def host_of(tool: Tool, parsed: Any) -> str:
         parts = urllib.parse.urlsplit(str(getattr(parsed, tool.url_field)).strip())
         if parts.scheme.lower() not in ("http", "https"):
             return ""
-        return (parts.hostname or "").rstrip(".")
+        return policy_safe((parts.hostname or "").rstrip("."))
     except ValueError:
         return ""
 
@@ -189,3 +191,28 @@ def recipient_domain_of(tool: Tool, parsed: Any) -> str:
     # No strip(): the tool gets the argument as sent, so the gate must judge it as sent.
     m = _PLAIN_ADDRESS.fullmatch(str(getattr(parsed, tool.recipient_field)))
     return m.group(1).lower() if m else ""
+
+
+def policy_safe(value: str) -> str:
+    """Day 9: OpenFGA rejects a check whose context holds a control character (newline, tab,
+    U+0000-U+001F, U+007F-U+009F), and the gate would then fail closed with a misleading
+    "policy engine unavailable". Such a value can't be on any allowlist, so it becomes ''."""
+    return "" if any(unicodedata.category(c) == "Cc" for c in value) else value
+
+
+def payee_of(tool: Tool, parsed: Any) -> str:
+    """Day 9 (G04): the payee for OpenFGA's `payee` context, exactly as sent: no trimming, no case
+    folding, because the tool pays the argument as sent. '' for tools without a payee."""
+    return policy_safe(str(getattr(parsed, tool.payee_field))) if tool.payee_field else ""
+
+
+def allowlist_reason(tool: Tool, parsed: Any) -> str | None:
+    """What to say when an allowlisted argument is why a call needs a human. Account numbers stay
+    out of the reason (it goes into the audit log, where arguments are kept only as an HMAC);
+    the approver sees the full arguments in Slack."""
+    if tool.recipient_field:
+        domain = recipient_domain_of(tool, parsed)
+        return f"recipient domain '{domain}' is not on the allowlist" if domain else "recipient is not one plain address"
+    if tool.payee_field:
+        return "payee is not on the allowlist"
+    return None

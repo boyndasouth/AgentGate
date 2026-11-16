@@ -1,0 +1,46 @@
+# Day 8: write the audit chain's head down outside the database.
+#
+# Every 6 hours this asks the broker for a signed checkpoint (last row id + hash) and appends it
+# to anchors.jsonl on the `audit-anchors` branch. Someone with database write access can rewrite
+# the chain and recompute every hash, but they can't change what is already committed here, so
+# `python scripts/anchor.py check` shows the rewrite. If the live chain no longer matches the
+# anchors, this job FAILS (GitHub emails the repo owner) and nothing new is anchored.
+#
+# Needs no secrets: it only calls the broker's public endpoints. Set the repository variable
+# AGENTGATE_URL to point it at a different broker.
+name: Anchor audit chain
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"    # UTC; off the hour, where GitHub's scheduler is less busy
+  workflow_dispatch:
+
+permissions:
+  contents: write             # push to the audit-anchors branch only (see the last step)
+
+concurrency:
+  group: audit-anchors
+  cancel-in-progress: false
+
+env:
+  AGENTGATE_URL: ${{ vars.AGENTGATE_URL || 'https://agentgate-broker.onrender.com' }}
+  ANCHOR_BRANCH: audit-anchors
+
+jobs:
+  anchor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the anchors branch (created on the first run)
+        run: bash deploy/anchors/checkout.sh
+
+      - name: Install cryptography (to verify the checkpoint's Ed25519 signature)
+        run: python3 -m pip install --quiet "cryptography>=42"
+
+      - name: Compare the chain with earlier anchors, then anchor the new head
+        run: python3 scripts/anchor.py publish --url "$AGENTGATE_URL" --file anchors/anchors.jsonl --require-signature
+
+      - name: Commit and push the new anchor
+        run: bash deploy/anchors/push.sh

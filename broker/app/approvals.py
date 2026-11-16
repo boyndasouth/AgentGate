@@ -57,7 +57,7 @@ class ApprovalError(Exception):
 @dataclass(frozen=True)
 class Approver:
     user: str      # AgentGate user name, e.g. 'shiwin' (OpenFGA: user:shiwin)
-    via: str       # 'slack:U07ABC123' | 'admin-api'
+    via: str       # 'slack:U07ABC123' | 'admin-ui:auth0|abc' | 'admin-api'
 
     @property
     def label(self) -> str:

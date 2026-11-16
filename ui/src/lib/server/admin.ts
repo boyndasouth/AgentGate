@@ -47,3 +47,13 @@ export function adminFromSession(session: Session | null): AdminIdentity | null 
 
 	return { sub, email, name: session.user?.name ?? email ?? sub, fgaUser };
 }
+
+/**
+ * Label for the audit log's approver column: which Auth0 account clicked.
+ * The broker accepts 'admin-ui:' + [A-Za-z0-9|._@-]{1,100}. Auth0 subs
+ * ("auth0|64f0…", "google-oauth2|1234") fit; any other character is replaced,
+ * so a decision is never rejected over its label.
+ */
+export function approvalVia(sub: string): string {
+	return `admin-ui:${sub.replace(/[^A-Za-z0-9|._@-]/g, '_').slice(0, 100)}`;
+}

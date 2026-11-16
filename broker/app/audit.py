@@ -4,8 +4,11 @@ Each row's hash = sha256(prev_hash + canonical_json(row fields)).
 Editing any field breaks that row's hash; deleting or reordering a row breaks
 the next row's prev_hash link. GET /audit/verify recomputes the whole chain.
 
-Honest limit: someone with DB write access can rewrite the entire chain.
-The fix (future work) is to publish the latest hash outside the database.
+Someone with DB write access could rewrite the entire chain and recompute every hash, and
+verify_chain would still pass. So the head is also published OUTSIDE the database (Day 8):
+`checkpoint()` returns the latest (id, hash), signed with the broker's Ed25519 key, and a
+scheduled GitHub Action appends it to a git branch (scripts/anchor.py). A rewrite then has to
+change a hash that is already written down somewhere the database owner can't edit.
 """
 
 from __future__ import annotations
@@ -121,3 +124,35 @@ async def verify_chain(conn: asyncpg.Connection) -> dict:
             expected_id += 1
             checked += 1
     return {"valid": True, "checked": checked, "head_hash": expected_prev}
+
+
+# ---------------------------------------------------------------- anchoring (Day 8)
+
+CHECKPOINT_TYP = "agentgate-audit-checkpoint+jwt"
+
+
+async def head(conn: asyncpg.Connection) -> tuple[int, str]:
+    """(last id, its hash); (0, GENESIS_HASH) for an empty log. Reads one row, no recompute."""
+    last = await conn.fetchrow("SELECT id, hash FROM audit_events ORDER BY id DESC LIMIT 1")
+    return (last["id"], last["hash"]) if last else (0, GENESIS_HASH)
+
+
+async def checkpoint(conn: asyncpg.Connection, key: Any, issuer: str) -> dict:
+    """The chain head as a signed statement: "at `iat`, row `last_id` had hash `head_hash`".
+    A compact EdDSA JWS, verifiable with /.well-known/jwks.json. It has no `aud` and its own
+    `typ`, so it can never be accepted as an agent token."""
+    import jwt   # PyJWT; imported here so the hashing helpers above stay stdlib-only
+
+    last_id, head_hash = await head(conn)
+    claims = {"iss": issuer, "iat": int(datetime.now(timezone.utc).timestamp()),
+              "last_id": last_id, "head_hash": head_hash}
+    jws = jwt.encode(claims, key.private_key, algorithm="EdDSA",
+                     headers={"kid": key.kid, "typ": CHECKPOINT_TYP})
+    return {**claims, "kid": key.kid, "jws": jws}
+
+
+async def hashes_at(conn: asyncpg.Connection, ids: list[int]) -> dict[str, str]:
+    """Stored hash of each requested row (missing ids are left out). Used to compare the
+    chain with anchors published earlier."""
+    rows = await conn.fetch("SELECT id, hash FROM audit_events WHERE id = ANY($1::bigint[])", ids)
+    return {str(r["id"]): r["hash"] for r in rows}

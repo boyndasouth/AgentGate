@@ -3,6 +3,7 @@
 // session → APPROVERS mapping, and the broker still asks OpenFGA whether that
 // user is an approver on the tool (same check as a Slack click).
 import { error, json } from '@sveltejs/kit';
+import { approvalVia } from '$lib/server/admin';
 import { broker, detail } from '$lib/server/broker';
 import type { RequestHandler } from './$types';
 
@@ -23,10 +24,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const r = await broker(`/approvals/${params.id}/decision`, {
 		method: 'POST',
-		// The broker's DecisionRequest is strict ({approve, approver} only) and
-		// records "user:X via admin-api".
-		// TODO: record the Auth0 sub too, once the broker accepts a `via` field.
-		body: { approve: body.approve, approver: `user:${admin.fgaUser}` }
+		// The broker's DecisionRequest is strict: {approve, approver, via?}. `via` names the
+		// Auth0 account that clicked, so the audit log reads "user:X via admin-ui:auth0|…".
+		// Both values come from the server-side session, never from the browser.
+		body: { approve: body.approve, approver: `user:${admin.fgaUser}`, via: approvalVia(admin.sub) }
 	});
 	if (!r.ok) return json({ detail: detail(r) }, { status: r.status || 502 });
 	return json(r.data);

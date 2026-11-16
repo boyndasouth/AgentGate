@@ -68,9 +68,9 @@ class H(BaseHTTPRequestHandler):
                 i = audit(event_type="tool_call", agent_id=ag, tool=tool, decision="deny", reason="token revoked (kill switch)", session_tainted=s["tainted"])
                 return self.send(403, {"decision": "deny", "reason": "token revoked (kill switch)", "tool": tool, "audit_id": i})
             args = b.get("args", {})
-            esc = (tool == "transfer_funds" and (args.get("amount", 0) > 100 or s["tainted"])) or (tool == "send_email" and s["tainted"])
+            esc = (tool == "transfer_funds" and (args.get("amount", 0) > 100 or s["tainted"])) or (tool == "send_email" and (s["tainted"] or not str(args.get("to", "")).lower().endswith("@agentgate.example")))
             if esc:
-                aid = str(uuid.uuid4()); reason = "session tainted by read_web" if s["tainted"] else "amount over limit"
+                aid = str(uuid.uuid4()); reason = "session tainted by read_web" if s["tainted"] else ("recipient is not on the allowlist" if tool == "send_email" else "amount over limit")
                 approvals[aid] = {"id": aid, "agent_id": ag, "tool": tool, "reason": reason, "status": "pending", "session_tainted": s["tainted"], "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 120)), "args": args}
                 i = audit(event_type="tool_call", agent_id=ag, tool=tool, decision="escalate", reason=reason, session_tainted=s["tainted"])
                 return self.send(202, {"decision": "escalate", "reason": reason, "tool": tool, "audit_id": i, "approval_id": aid, "status": "pending", "session_tainted": s["tainted"]})
@@ -89,7 +89,7 @@ class H(BaseHTTPRequestHandler):
         if p.endswith("/decision"):
             a = approvals.get(p.split("/")[2])
             if not a or a["status"] != "pending": return self.send(409, {"detail": "already decided"})
-            if set(b) != {"approve", "approver"}: return self.send(400, {"detail": "Validation failed for POST " + p})
+            if not {"approve", "approver"} <= set(b) <= {"approve", "approver", "via"} or not str(b.get("via", "admin-ui:x")).startswith("admin-ui:"): return self.send(400, {"detail": "Validation failed for POST " + p})
             if b.get("approver") != "user:shiwin": return self.send(403, {"detail": f"{b.get('approver')} is not an approver"})
             a["status"] = "approved" if b["approve"] else "denied"; a["approver"] = f"{b['approver']} via {b.get('via', 'admin-api')}"
             audit(event_type="approval_resolved", agent_id=a["agent_id"], tool=a["tool"], decision="allow" if b["approve"] else "deny", reason=a["status"], approver=a["approver"])

@@ -107,7 +107,7 @@ Write-Host "health: openfga=$($h.Body.openfga) slack=$($h.Body.slack)"
 # --- 0. control: clean session -------------------------------------------------
 Write-Host "`n-- 0. Control: same email tool, clean session" -ForegroundColor Cyan
 $m0 = New-AgentToken 'mailer' @('send_email') 'Send the weekly status note' $null
-$r = Invoke-Tool $m0.access_token 'send_email' @{ to = 'shiwin@example.com'; subject = 'Weekly status'; body = 'All green.' }
+$r = Invoke-Tool $m0.access_token 'send_email' @{ to = 'shiwin@agentgate.example'; subject = 'Weekly status'; body = 'All green.' }
 Show-Step 'Mailer in a clean session sends an internal email' $r 200
 
 # --- 1. researcher reads the poisoned page ---------------------------------------

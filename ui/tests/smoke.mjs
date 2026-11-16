@@ -12,7 +12,7 @@ process.env.APPROVERS = 'auth0|admin1=shiwin';
 const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom', logLevel: 'error' });
 const demo = await vite.ssrLoadModule('/src/lib/server/demo.ts');
 const { broker } = await vite.ssrLoadModule('/src/lib/server/broker.ts');
-const { adminFromSession } = await vite.ssrLoadModule('/src/lib/server/admin.ts');
+const { adminFromSession, approvalVia } = await vite.ssrLoadModule('/src/lib/server/admin.ts');
 
 let fails = 0;
 const check = (name, ok, extra = '') => {
@@ -38,8 +38,15 @@ const big = await demo.runScenario('big');
 check('pay $5,000 → escalate', last(big).outcome === 'escalate' && !!big.approvalId);
 let p = await demo.pollApproval(big.keepToken, big.approvalId);
 check('agent poll sees pending', p.state === 'pending');
-const dec = await broker(`/approvals/${big.approvalId}/decision`, { method: 'POST', body: { approve: false, approver: 'user:shiwin' } });
-check('deny via admin API', dec.ok, JSON.stringify(dec.data));
+// Day 8: the UI names the clicking Auth0 account in `via`; only 'admin-ui:…' labels are accepted
+check('via label from an Auth0 sub', approvalVia('auth0|admin1') === 'admin-ui:auth0|admin1');
+check('via label strips odd characters', approvalVia('waad|a b/c\n') === 'admin-ui:waad|a_b_c_');
+const forged = await broker(`/approvals/${big.approvalId}/decision`, { method: 'POST', body: { approve: true, approver: 'user:shiwin', via: 'slack:U123' } });
+check('forged via label is rejected', forged.status === 400, JSON.stringify(forged.data));
+const dec = await broker(`/approvals/${big.approvalId}/decision`, { method: 'POST', body: { approve: false, approver: 'user:shiwin', via: approvalVia('auth0|admin1') } });
+check('deny from the UI', dec.ok, JSON.stringify(dec.data));
+const trail = await broker('/audit/events');
+check('audit names the Auth0 account', trail.data?.[0]?.approver === 'user:shiwin via admin-ui:auth0|admin1', trail.data?.[0]?.approver);
 p = await demo.pollApproval(big.keepToken, big.approvalId);
 check('agent poll sees denied', p.state === 'denied', p.agentSays);
 

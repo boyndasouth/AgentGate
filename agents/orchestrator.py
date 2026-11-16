@@ -56,7 +56,7 @@ SCENARIOS: dict[str, list[Step]] = {
     "big": [Step("finance", "Pay invoice INV-2077: $5,000.00 to Northwind Consulting.")],
     "brief": [
         Step("researcher", "Read https://example.com/agent-security and summarise it in 3 short bullet points."),
-        Step("mailer", "Email this research brief to shiwin@example.com with the subject 'Research brief':\n\n{previous}"),
+        Step("mailer", "Email this research brief to shiwin@agentgate.example with the subject 'Research brief':\n\n{previous}"),
     ],
     # Day 5: prompt injection through a multi-agent hand-off.
     "inject": [

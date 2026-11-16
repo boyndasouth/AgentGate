@@ -84,6 +84,9 @@ class FakeGate:
                 decision, reason, code = "escalate", "amount over limit or session tainted; needs approval", 202
             elif tool == "send_email" and tainted:
                 decision, reason, code = "escalate", "policy: needs human approval (session tainted by read_web)", 202
+            elif tool == "send_email" and not args["to"].lower().endswith("@agentgate.example"):
+                # Day 8 (G01): a clean session may only send alone to the allowlisted domain.
+                decision, reason, code = "escalate", "policy: needs human approval (recipient is not on the allowlist)", 202
             else:
                 decision, reason, code = "allow", "policy allows", 200
             result = None
@@ -344,3 +347,20 @@ def test_agent_model_list_builds_fallback_and_skips_missing_keys(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     assert len(team._build_model("google:gemini-3.1-flash-lite,groq:openai/gpt-oss-120b").models) == 2
     assert team._build_model("google:gemini-3.1-flash-lite") == "google:gemini-3.1-flash-lite"
+
+
+@pytest.mark.asyncio
+async def test_clean_session_outside_recipient_needs_a_human(gate_and_fake):
+    """Day 8 (G01): nothing tainted the session, but the recipient is outside the allowlist,
+    so the send goes to a human. An internal recipient in the same session sends at once."""
+    gate, fake = gate_and_fake
+    fake.human = "deny"
+    async with gate:
+        tok = await gate.mint_token("mailer", "t", ["query_customers", "send_email"], None)
+        inside = await gate.call_tool(tok, "send_email", {"to": "team@agentgate.example", "subject": "s", "body": "b"})
+        outside = await gate.call_tool(tok, "send_email", {"to": EXFIL, "subject": "Customer export", "body": "list"})
+    assert inside.decision == "allow"
+    assert outside.decision == "deny" and "denied by user:shiwin" in outside.reason
+    assert [(e["tool"], e["decision"]) for e in fake.audit] == [
+        ("send_email", "allow"), ("send_email", "escalate"), ("send_email", "deny")]
+    assert [m["to"] for m in fake.outbox] == ["team@agentgate.example"]

@@ -35,13 +35,16 @@ async def decide(
     session_tainted: bool,
     tainted_by: str | None = None,
     host: str = "",
+    recipient_domain: str = "",
+    has_recipient: bool = False,
 ) -> Decision:
     if tool not in token_scopes:
         return Decision("deny", f"tool '{tool}' is outside this task's token scopes")
 
     user, obj = f"agent:{agent_id}", f"tool:{tool}"
     # Always send every key: OpenFGA errors if a conditional tuple's parameter is missing.
-    context = {"amount": float(amount), "session_tainted": bool(session_tainted), "host": host}
+    context = {"amount": float(amount), "session_tainted": bool(session_tainted), "host": host,
+               "recipient_domain": recipient_domain}
 
     try:
         if await fga.check(user, "can_invoke", obj, context):
@@ -52,6 +55,12 @@ async def decide(
                 why.append(f"session tainted by {tainted_by}" if tainted_by else "session is tainted")
             if amount:
                 why.append(f"amount {amount:g}")
+            # Day 8 (G01): would this call have gone through in a clean session? If not, the
+            # recipient is (also) why a human is asked. One extra check, on escalations only.
+            if has_recipient and not await fga.check(user, "can_invoke", obj,
+                                                     {**context, "session_tainted": False}):
+                why.append(f"recipient domain '{recipient_domain}' is not on the allowlist" if recipient_domain
+                           else "recipient is not one plain address")
             detail = f" ({', '.join(why)})" if why else ""
             return Decision("escalate", f"policy: needs human approval{detail}")
         if session_tainted and await fga.check(user, "can_request_approval", obj, {**context, "session_tainted": False}):
@@ -70,5 +79,5 @@ async def may_hold_scope(fga: FGAClient, agent_id: str, tool: str) -> bool:
     check later applies the real amount and taint."""
     return await fga.check(
         f"agent:{agent_id}", "can_request_approval", f"tool:{tool}",
-        {"amount": 0.0, "session_tainted": False, "host": ""},
+        {"amount": 0.0, "session_tainted": False, "host": "", "recipient_domain": ""},
     )

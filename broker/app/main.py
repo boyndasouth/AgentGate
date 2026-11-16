@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -34,7 +35,7 @@ from .fga import FGAClient, PolicyEngineError
 from .keys import SigningKey
 from .slack import SLACK_EVENTS_PATH, SlackApprovals
 from .tokens import TokenError, check_not_revoked, decode_token, issue_token
-from .tools import TOOLS, amount_of, host_of, parse_args
+from .tools import TOOLS, amount_of, host_of, parse_args, recipient_domain_of
 
 log = logging.getLogger("agentgate")
 
@@ -162,6 +163,26 @@ async def jwks(state: State) -> dict:
 async def audit_verify(conn: asyncpg.Connection) -> dict:
     """Recompute the hash chain and report the first broken row."""
     return await audit.verify_chain(conn)
+
+
+@get("/audit/checkpoint", tags=["audit"], dependencies={"conn": Provide(provide_conn)})
+async def audit_checkpoint(state: State, conn: asyncpg.Connection) -> dict:
+    """Day 8: the chain head (last id + hash), signed by the broker. Public, like /audit/verify:
+    it is meant to be copied somewhere outside the database (scripts/anchor.py)."""
+    return await audit.checkpoint(conn, state.key, state.settings.issuer)
+
+
+@get("/audit/hashes", tags=["audit"], dependencies={"conn": Provide(provide_conn)})
+async def audit_hashes(conn: asyncpg.Connection, ids: str) -> Response:
+    """Day 8: stored hashes for ?ids=1,5,9 (at most 500), to compare against published anchors.
+    A row hash reveals nothing about the row; the head hash is already public in /audit/verify."""
+    try:
+        wanted = sorted({int(x) for x in ids.split(",") if x.strip()})
+    except ValueError:
+        return _json(400, {"error": "ids must be comma-separated integers"})
+    if not wanted or len(wanted) > 500 or wanted[0] < 1 or wanted[-1] > 2**62:
+        return _json(400, {"error": "give 1 to 500 positive ids"})
+    return _json(200, {"hashes": await audit.hashes_at(conn, wanted)})
 
 
 @get("/audit/events", tags=["audit"], guards=[admin_guard], dependencies={"conn": Provide(provide_conn)},
@@ -365,7 +386,9 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     # 5. Policy decision, with the session's taint as OpenFGA context.
     decision = await decide(state.fga, agent_id=claims.agent_id, tool=name, token_scopes=claims.scopes,
                             amount=amount_of(tool, parsed), session_tainted=st.tainted,
-                            tainted_by=st.tainted_by, host=host_of(tool, parsed))
+                            tainted_by=st.tainted_by, host=host_of(tool, parsed),
+                            recipient_domain=recipient_domain_of(tool, parsed),
+                            has_recipient=bool(tool.recipient_field))
 
     if decision.outcome == "deny":
         ev = await record("deny", decision.reason, args_hash=args_hash)
@@ -466,6 +489,14 @@ async def cancel_approval(approval_id: uuid.UUID, request: Request, state: State
 class DecisionRequest(msgspec.Struct, forbid_unknown_fields=True):
     approve: bool
     approver: str      # AgentGate user name, e.g. 'shiwin'; must be an OpenFGA approver of the tool
+    # Day 8: where the click came from, for the audit log: 'admin-ui:<Auth0 sub>'. Optional;
+    # without it the decision is recorded as 'admin-api' (curl, scripts/decide.ps1).
+    via: str | None = None
+
+
+# The admin key holder may only label a decision as coming from the admin UI, never as
+# 'slack:...' or 'timeout'. Auth0 subs look like 'auth0|64f0...' or 'google-oauth2|1234'.
+_VIA = re.compile(r"admin-ui:[A-Za-z0-9|._@-]{1,100}")
 
 
 @get("/approvals", tags=["approvals"], guards=[admin_guard], dependencies={"conn": Provide(provide_conn)},
@@ -481,11 +512,13 @@ async def list_approvals(state: State, conn: asyncpg.Connection, status: str | N
       security=[{"AdminKey": []}])
 async def decide_approval(approval_id: uuid.UUID, data: DecisionRequest, state: State) -> Response:
     """Fallback (and Day 6 UI) path for Approve / Deny, same rules as the Slack buttons."""
-    # TODO(Day 6): take the approver from the Auth0 login instead of the request body.
+    # The UI's server route takes `approver` and `via` from the Auth0 session, never from the browser.
+    if data.via is not None and not _VIA.fullmatch(data.via):
+        return _json(400, {"error": "approval_not_applied", "reason": "via must look like 'admin-ui:<Auth0 sub>'"})
     try:
         row = await state.approvals.decide(approval_id, approve=data.approve,
                                            approver=Approver(user=data.approver.removeprefix("user:"),
-                                                             via="admin-api"))
+                                                             via=data.via or "admin-api"))
     except ApprovalError as exc:
         return _json(exc.status, {"error": "approval_not_applied", "reason": str(exc)})
     return _json(200, admin_view(row))
@@ -507,7 +540,7 @@ async def slack_events(scope: dict, receive: Any, send: Any) -> None:
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.4.0",
+    version="0.5.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),
@@ -517,7 +550,7 @@ openapi_config = OpenAPIConfig(
 )
 
 app = Litestar(
-    route_handlers=[health, jwks, audit_verify, audit_events, create_token, revoke_token, list_agents,
+    route_handlers=[health, jwks, audit_verify, audit_checkpoint, audit_hashes, audit_events, create_token, revoke_token, list_agents,
                     disable_agent, enable_agent, call_tool,
                     poll_approval, cancel_approval, list_approvals, decide_approval, slack_events],
     lifespan=[lifespan],

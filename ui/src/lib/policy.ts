@@ -8,8 +8,8 @@ export const POLICY: Record<string, Grant[]> = {
 	mailer: [
 		{ tool: 'read_inbox', mode: 'direct', note: 'taints the session' },
 		{ tool: 'query_customers', mode: 'direct' },
-		{ tool: 'send_email', mode: 'direct', note: 'clean session only' },
-		{ tool: 'send_email', mode: 'approval', note: 'tainted session' }
+		{ tool: 'send_email', mode: 'direct', note: 'clean session, to @agentgate.example only' },
+		{ tool: 'send_email', mode: 'approval', note: 'tainted session or outside recipient' }
 	],
 	finance: [
 		{ tool: 'transfer_funds', mode: 'direct', note: '≤ $100, clean session' },

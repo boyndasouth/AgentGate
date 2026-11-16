@@ -30,7 +30,8 @@
     context:
       allowed_hosts: [example.com]
 
-# --- mailer: reads inbox and customers; sends freely only in a clean session ---
+# --- mailer: reads inbox and customers; sends alone only in a clean session AND to an
+#     allowlisted (internal) domain; any other send needs a human (closes G01) ---
 - user: agent:mailer
   relation: direct_invoker
   object: tool:read_inbox
@@ -41,7 +42,9 @@
   relation: direct_invoker
   object: tool:send_email
   condition:
-    name: untainted
+    name: untainted_allowed_recipient
+    context:
+      allowed_recipient_domains: [agentgate.example]
 - user: agent:mailer
   relation: approval_invoker
   object: tool:send_email

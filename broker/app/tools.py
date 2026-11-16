@@ -3,6 +3,7 @@
 Each tool has a typed argument struct (validated before the policy check) and a
 `taints` flag: tools that return untrusted outside content. After any successful call
 to a tainting tool, the gate marks the whole session tainted (Day 5, see taint.py).
+`amount_field`, `url_field` and `recipient_field` name the arguments the policy looks at.
 
 Agents never see tool API keys. A real integration would read its key from the
 broker's environment here, after the gate has allowed the call.
@@ -10,6 +11,7 @@ broker's environment here, after the gate has allowed the call.
 
 from __future__ import annotations
 
+import re
 import urllib.parse
 import uuid
 from dataclasses import dataclass
@@ -133,6 +135,7 @@ class Tool:
     taints: bool = False                      # returns untrusted outside content
     amount_field: str | None = None           # arg sent to OpenFGA as `amount`
     url_field: str | None = None              # arg whose hostname is sent to OpenFGA as `host` (Day 7)
+    recipient_field: str | None = None        # arg whose domain is sent to OpenFGA as `recipient_domain` (Day 8)
 
 
 TOOLS: dict[str, Tool] = {
@@ -140,7 +143,7 @@ TOOLS: dict[str, Tool] = {
     for t in (
         Tool("read_web", ReadWebArgs, read_web, taints=True, url_field="url"),
         Tool("read_inbox", ReadInboxArgs, read_inbox, taints=True),
-        Tool("send_email", SendEmailArgs, send_email),
+        Tool("send_email", SendEmailArgs, send_email, recipient_field="to"),
         Tool("transfer_funds", TransferFundsArgs, transfer_funds, amount_field="amount"),
         Tool("query_customers", QueryCustomersArgs, query_customers),
     )
@@ -170,3 +173,19 @@ def host_of(tool: Tool, parsed: Any) -> str:
         return (parts.hostname or "").rstrip(".")
     except ValueError:
         return ""
+
+
+# One plain ASCII address, nothing else: no display name, no list, no comments, no quoting.
+_PLAIN_ADDRESS = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
+
+
+def recipient_domain_of(tool: Tool, parsed: Any) -> str:
+    """Day 8 (G01): the recipient's domain for OpenFGA's `recipient_domain` context, lowercased.
+    '' for tools without a recipient and for anything that isn't exactly one plain address
+    ("a@x, b@y", "Name <a@x>", non-ASCII look-alikes, a trailing dot). '' is never on an
+    allowlist, so an address the gate can't read with certainty goes to a human."""
+    if not tool.recipient_field:
+        return ""
+    # No strip(): the tool gets the argument as sent, so the gate must judge it as sent.
+    m = _PLAIN_ADDRESS.fullmatch(str(getattr(parsed, tool.recipient_field)))
+    return m.group(1).lower() if m else ""

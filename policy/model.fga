@@ -6,7 +6,8 @@ model
 #   can_invoke            -> allow
 #   can_request_approval  -> escalate to a human in Slack
 #   neither               -> deny
-# Always send `amount`, `session_tainted`, `host`, `recipient_domain` and `payee` in the check context:
+# Always send `amount`, `session_tainted`, `host`, `recipient_domain`, `payee` and `invoice_matches`
+# in the check context of a tool check (`current_time` in a delegation check):
 # OpenFGA errors when a conditional tuple's parameter is missing.
 
 type user
@@ -18,7 +19,7 @@ type agent
 type tool
   relations
     # Act immediately, optionally only while a condition holds.
-    define direct_invoker: [agent, agent with untainted, agent with within_limit_known_payee, agent with untainted_or_allowed_host, agent with untainted_allowed_recipient]
+    define direct_invoker: [agent, agent with untainted, agent with within_limit_open_invoice, agent with untainted_or_allowed_host, agent with untainted_allowed_recipient]
     # Act only after a human approves.
     define approval_invoker: [agent]
     # Humans who may approve escalations for this tool.
@@ -27,17 +28,34 @@ type tool
     define can_invoke: direct_invoker
     define can_request_approval: approval_invoker or direct_invoker
 
+# Day 10: delegation chains. Agent A grants agent B some of its tools for a while (one tuple per
+# relation below); B then trades its own token for one that acts on A's behalf. A delegated call
+# is judged AS A (A's grants and conditions), and only while every hop is live:
+#   check(agent:B,  delegate, delegation:d)   B still holds it, not expired (current_time)
+#   check(tool:X,   covers,   delegation:d)   the grant includes this tool
+# A hop-2 grant (B passes it on to C) points at hop 1 through `parent`; the broker checks every hop.
+type delegation
+  relations
+    define delegator: [agent]
+    define delegate: [agent with not_expired]
+    define covers: [tool]
+    define parent: [delegation]
+
 # The session has not read untrusted content (web page, inbound email).
 condition untainted(session_tainted: bool) {
   !session_tainted
 }
 
-# Small amount AND a clean session AND a payee on the tuple's allowlist. One tuple can carry
-# only one condition, so all three checks live here: a tainted session never moves money alone,
-# and (Day 9, closes G04) neither does a clean one paying an account nobody has approved before.
+# Small amount AND a clean session AND a payee on the tuple's allowlist AND an open invoice that
+# matches. One tuple can carry only one condition, so all four checks live here:
+#  - a tainted session never moves money alone;
+#  - (Day 9, closes G04) neither does a clean one paying an account nobody has approved;
+#  - (Day 10, closes G05) neither does one paying an approved vendor money it isn't owed.
 # `payee` is the to_account argument exactly as sent (exact match, no normalising).
-condition within_limit_known_payee(amount: double, max_amount: double, session_tainted: bool, payee: string, allowed_payees: list<string>) {
-  amount <= max_amount && !session_tainted && payee in allowed_payees
+# `invoice_matches` is computed by the broker: the invoice_id names an OPEN invoice from that
+# payee for exactly that amount (broker/app/invoices.py). Paying it marks it paid.
+condition within_limit_open_invoice(amount: double, max_amount: double, session_tainted: bool, payee: string, allowed_payees: list<string>, invoice_matches: bool) {
+  amount <= max_amount && !session_tainted && payee in allowed_payees && invoice_matches
 }
 
 # Day 7 (closes G03): reading a URL also sends data out, in the URL itself. Once the session
@@ -55,4 +73,9 @@ condition untainted_or_allowed_host(session_tainted: bool, host: string, allowed
 # without a recipient or when the address isn't one plain address.
 condition untainted_allowed_recipient(session_tainted: bool, recipient_domain: string, allowed_recipient_domains: list<string>) {
   !session_tainted && recipient_domain in allowed_recipient_domains
+}
+
+# Day 10: a delegation is live until its expiry; the broker sends the current time with each check.
+condition not_expired(current_time: timestamp, expires_at: timestamp) {
+  current_time < expires_at
 }

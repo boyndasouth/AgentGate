@@ -1,4 +1,4 @@
-"""Run the 22-case prompt-injection suite through the gate and report the block rate.
+"""Run the 29-case prompt-injection suite through the gate and report the block rate.
 
   python eval/injection_suite.py                    # local broker (.env, http://localhost:8000)
   python eval/injection_suite.py --target render    # deployed broker (.env.render)
@@ -19,14 +19,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cases import CASES, Call, Case, Token  # noqa: E402
+from cases import CASES, Call, Case, Delegate, Exchange, Invoice, Kill, Token  # noqa: E402
 from gate import REPO, Gate, load_config  # noqa: E402
 
-STOPPED = {"deny": "blocked", "token_denied": "blocked", "escalate": "escalated", "allow": "allowed"}
+STOPPED = {"deny": "blocked", "token_denied": "blocked", "refused": "blocked", "escalate": "escalated",
+           "allow": "allowed"}
 
 
 class SetupError(Exception):
@@ -34,8 +36,31 @@ class SetupError(Exception):
 
 
 def run_case(gate: Gate, case: Case) -> dict:
+    killed: list[str] = []
+    granted: dict[str, str] = {}
+    try:
+        return _run_case(gate, case, killed, granted)
+    finally:
+        for did in granted.values():   # Day 10: leave no live test delegations behind (cascades to hop 2)
+            gate.admin("POST", f"/delegations/{did}/revoke", {"reason": f"injection-suite {case.id} cleanup"})
+        for agent in killed:          # Day 10: leave every agent active for the next case
+            gate.admin("POST", f"/agents/{agent}/enable")
+        if killed:
+            time.sleep(1.2)           # a token minted in the kill switch's second counts as revoked
+
+
+def _run_case(gate: Gate, case: Case, killed: list[str], granted: dict[str, str]) -> dict:
     session: str | None = None
     tokens: dict[str, str] = {}
+    # granted: Day 10, delegate -> delegation id granted to it (the caller revokes them afterwards)
+    acting: dict[str, tuple[str, set[str]]] = {}   # Day 10: agent -> (delegated token, its scopes)
+
+    def token_for(agent: str, tools) -> str | None:
+        """Like a real client: the delegated token for delegated tools, the agent's own otherwise."""
+        if agent in acting and set(tools) <= acting[agent][1]:
+            return acting[agent][0]
+        return tokens.get(agent)
+    invoice = ""
     trail: list[str] = []
     out = {"id": case.id, "channel": case.channel, "goal": case.goal, "expect": case.expect,
            "gap": case.gap, "outcome": None, "status": None, "reason": "", "session_tainted": None,
@@ -56,11 +81,49 @@ def run_case(gate: Gate, case: Case) -> dict:
             session = body["session_id"]
             continue
 
+        if isinstance(step, Invoice):
+            status, body, _ = gate.admin("POST", "/invoices", {"payee": step.payee, "amount": step.amount})
+            if status != 201:
+                raise SetupError(f"{case.id}: invoice refused ({status}): {body}")
+            invoice = body["id"]
+            trail.append(f"invoice {invoice} {step.amount} -> {status}")
+            continue
+
+        if isinstance(step, Kill):
+            gate.admin("POST", f"/agents/{step.agent}/disable", {"reason": f"injection-suite {case.id}"})
+            killed.append(step.agent)
+            trail.append(f"kill switch {step.agent}")
+            continue
+
+        if isinstance(step, (Delegate, Exchange)):
+            token = token_for(step.agent, step.tools) if isinstance(step, Delegate) else tokens.get(step.agent)
+            if token is None:
+                raise SetupError(f"{case.id}: no token for {step.agent}")
+            if isinstance(step, Delegate):
+                status, body, _ = gate.delegate(token, step.to, list(step.tools), task=f"injection-suite {case.id}")
+                trail.append(f"{step.agent} delegates {','.join(step.tools)} to {step.to} -> {status}")
+            else:
+                status, body, _ = gate.exchange(token, granted.get(step.agent, "00000000-0000-0000-0000-000000000000"),
+                                                list(step.scopes), task=f"injection-suite {case.id}")
+                trail.append(f"{step.agent} exchanges for {','.join(step.scopes)} -> {status}")
+            if step.attack:
+                out.update(outcome="refused" if status in (400, 403, 404) else ("allow" if status == 201 else "error"),
+                           status=status, reason=body.get("reason", ""), audit_id=body.get("audit_id"))
+                break
+            if status != 201:
+                raise SetupError(f"{case.id}: {type(step).__name__.lower()} refused ({status}): {body.get('reason')}")
+            if isinstance(step, Delegate):
+                granted[step.to] = body["delegation_id"]
+            else:
+                acting[step.agent] = (body["access_token"], set(step.scopes))
+            continue
+
         assert isinstance(step, Call)
-        token = tokens.get(step.agent)
+        token = token_for(step.agent, [step.tool])
         if token is None:
             raise SetupError(f"{case.id}: no token for {step.agent}")
-        status, body, _ = gate.tool(token, step.tool, step.args)
+        args = {k: (invoice if v == "$invoice" else v) for k, v in step.args.items()}
+        status, body, _ = gate.tool(token, step.tool, args)
         decision = body.get("decision", "error")
         trail.append(f"{step.agent} {step.tool} -> {status} {decision}")
         if not step.attack:

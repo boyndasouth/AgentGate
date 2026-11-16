@@ -1,10 +1,34 @@
 # PROGRESS
 
-**Current day:** Day 9 — G04 closed + LLM-in-the-loop mode (2026-11-16): `day9.patch` applied and checked on Shiwin's machine, LLM numbers in the README (`day9-readme.patch`). **Not yet pushed.**
-**Build status:** one-week MVP complete (Day 7). Day 8 (applied, pushed, Render suite 20/21) closed G01/G02, added the approver `via` field and audit anchoring. Day 9 closes G04 with a payee allowlist, adds known gap G05, and adds the LLM-in-the-loop suite. Still to do: delegation chains (stretch).
-**Headline numbers after Day 9:** **21/22 attacks stopped (95%)** worst case (local, Shiwin's machine); with Gemini 3.1 Flash-Lite the model tried the attack in **14/35 runs (40%)** and **3/35 (9%)** got through the gate, all G05; latency +5.2 ms p50 / +6.5 ms p95 (re-measured by Shiwin after Day 8: +5.17 / +6.55, unchanged).
+**Current day:** Day 10: delegation chains, G05 closed with invoice matching, persistent OpenFGA on Render, UI grants served by the broker (2026-11-16). `day10.patch` delivered. **Not yet applied.**
+**Build status:** one-week MVP complete (Day 7). Day 8 closed G01 and G02 and added `via` and anchoring. Day 9 closed G04 and added the LLM suite. Day 10 finishes the last stretch goal (delegation chains) and closes G05. There are no known gaps left in the suite.
+**Headline numbers after Day 10 (workspace, fresh DB):** **29/29 attacks stopped** (11 blocked, 18 escalated, 0 allowed). Latency on Shiwin's machine is still the Day 8 figure (+5.2 ms p50 / +6.5 ms p95). In the workspace, an invoice-backed payment adds about 0.7 ms over a plain allowed call. LLM numbers are from Day 9 and were measured before G05 closed.
 
-**Repo:** github.com/boyndasouth/AgentGate (branch main) · **Broker:** https://agentgate-broker.onrender.com (deployed: OpenAPI v0.5.0 since Day 8; Day 9 patch is v0.6.0: payee in the decision context, no endpoint changes) · **Admin UI:** Vercel, root dir `ui/` (add the production URL here) · **DB:** Supabase, session pooler · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 9 at cfabd2a) · **Broker:** https://agentgate-broker.onrender.com (Day 10 patch is OpenAPI v0.7.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA now in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+
+## Day 10 checklist
+- [x] **G05 closed (invoice matching).** The finance grant is now `within_limit_open_invoice`. A payment of $100 or less to an allowlisted payee from a clean session is allowed only when `invoice_id` names an OPEN invoice with the same payee and amount. The broker computes `invoice_matches` from Postgres and passes it in the check context. The invoice is settled in the same transaction as the payment, so paying it a second time escalates ("invoice INV-x is already paid"). Only admins create invoices (`POST/GET /invoices`). Seed: INV-1042, $40, acct_acme_supplies.
+- [x] **Delegation chains.** `POST /delegations` (agent A grants a subset of its tools to agent B for 30-3600 s), `POST /tokens/exchange` (B trades its own token and the delegation id for a delegated token: `sub` = principal, nested `act`, `dlg` = chain). Calls are judged as the principal. Limits: max 2 hops, no cycles, same owner, a tainted session can't grant, and taint follows the grant. Every call re-checks each hop: the DB row (not revoked or expired) and OpenFGA (`delegate` with a `not_expired` condition, plus `covers`). Revoking one link cascades to everything below it, and the kill switch revokes every delegation that touches the agent. Admin: `GET /delegations`, `POST /delegations/{id}/revoke`.
+- [x] **Persistent OpenFGA on Render.** When `FGA_DB_PASSWORD` is set, `deploy/render/fga_db.py` creates an `openfga` login role whose search_path is pinned to its own `openfga` schema (Supavisor ignores a search_path in the URL). The password is stored as a SCRAM verifier. OpenFGA runs `migrate`, then `seed_fga.py` SYNCS the store instead of recreating it: it reuses the model if unchanged and diff-syncs tool/agent tuples while keeping delegation tuples. Without the variable, OpenFGA stays in memory as before.
+- [x] **UI cleanup.** `ui/src/lib/policy.ts` is deleted. `GET /agents` returns each agent's `grants` (read from OpenFGA) and `delegations`, and the Agents panel renders them with a Revoke button per delegation. The demo's payment creates an invoice first.
+- [x] Suite: 29 cases. G05 now escalates; new G06 (pays an invoice id that doesn't exist) and D01-D06 (delegation abuse: over-broad grant, out-of-scope tool, chain past 2 hops, tainted grant, revoked link, kill switch on the delegator). LLM suite: 16 cases run, 13 n/a.
+- [ ] Vercel and `audit-anchors`: can't be checked from the workspace. Shiwin: check Vercel → Deployments, filtered by branch `audit-anchors`.
+- [ ] Shiwin: apply `day10.patch`, run local checks, push, add the `FGA_DB_PASSWORD` secret on Render, run the Render suite
+- [ ] Optional: re-run the LLM suite (G05 should now escalate)
+
+## Day 10: apply and deploy
+1. `git pull`, then `git apply --check day10.patch` and `git apply day10.patch`.
+2. Supabase SQL editor: run the new parts of `broker/schema.sql` (the `invoices` and `delegations` tables, the new columns on `tokens` and `approvals`). The file is idempotent, so running all of it works too.
+3. Local: `.\scripts\fga.ps1 model test --tests tests.fga.yaml` (74 checks, 6 list_objects), `py scripts/load_store.py --replace`, `docker compose up -d --build broker`, `.\scripts\run_eval.ps1 suite` (expect 29/29), `.\scripts\demo_day2.ps1`.
+4. Render: add the secret `FGA_DB_PASSWORD` (16+ random characters), then push. In the deploy log, look for `[fga_db]` (role and schema ready), `openfga migrate`, and `[seed_fga] ... 15 sanity checks passed`. A second deploy should say the model is unchanged.
+5. `.\scripts\run_eval.ps1 suite -Target render`; commit `eval/results/*.json`.
+
+## Day 10: tested before delivery (workspace: Postgres 16, OpenFGA v1.22.1, broker at the patch, fresh database)
+- `fga model test`: 74/74 checks, 6/6 list_objects. `model.json` is byte-identical to a fresh transform. `load_store.py --replace` replayed every case (delegation tests use contextual tuples). `seed_fga.py`: 15 sanity checks.
+- Suite 29/29 (11 blocked, 18 escalated), no regressions, chain valid. Delegation integration test: 44 checks (grant limits, exchange, expiry, cascade, kill switch, approvals on a delegated call, audit labels). Day 8 and 9 recipient, payee and `via` tests pass; payee tests updated to pay against invoices. Anchoring publish and check pass.
+- Render boot sequence against a SCRAM Postgres: role and schema created, OpenFGA tables only in `openfga` and no access to `public`, password rotation works, no secret in the PG log or the process list, an unchanged policy reuses the model, and a failure in fga_db or seed stops the boot.
+- Agents offline tests: 14 passed. LLM self-test passed. UI smoke passed, `svelte-check` 0 errors, `vite build` ok. Short latency run: allowed calls +3.4 ms p50, invoice payment +0.7 ms over that.
+- **Not tested:** login through Supabase's real Supavisor with the new role, Render latency with OpenFGA on Postgres, PowerShell scripts, a visual check of the new Agents panel, Vercel on `audit-anchors`.
 
 ## Day 9 checklist
 - [x] **G04 closed (payee allowlist).** `transfer_funds` direct grant is now `within_limit_known_payee` (amount ≤ 100 AND clean session AND `to_account` in `[acct_acme_supplies]`, exact match). Replaces `within_limit_untainted`. Escalation reason says "payee is not on the allowlist" without the account number.
@@ -14,10 +38,10 @@
 - [x] **LLM-in-the-loop suite** (`eval/llm_cases.py`, `eval/llm_suite.py`, `scripts/run_llm_suite.ps1`): 16 of 22 cases run through the real agents; 6 are n/a (the agents' tools can't express them, or the orchestrator fixes the scopes). Reports "model tried it" vs. "got through". `-SelfTest` checks the harness with scripted models, no API key.
 - [x] Shiwin: applied `day9.patch`; 63/63 + 5/5, suite 21/22 (G05), `demo_day2.ps1` all pass, LLM self-test passed in Docker (2026-11-16)
 - [x] LLM run, Gemini 3.1 Flash-Lite, 3 trials: 48 runs, 13 provider errors (503/429), 35 valid; model tried the attack 14/35, through the gate 3/35 (all G05). Numbers in the README.
-- [ ] Push Day 9, run `.\scripts\run_eval.ps1 suite -Target render`, commit `eval/results/*.json`
+- [x] Day 9 pushed (main at cfabd2a)
 - [ ] Optional: a second LLM batch when Gemini is less busy (several rows have 1 valid run); merge the result files
 - [x] Day 8 leftover: the anchor workflow ran successfully; `audit-anchors` branch live, first anchor at row 291 (2026-11-16)
-- [ ] Stretch: delegation chains — not started
+- [x] Stretch: delegation chains, done on Day 10
 
 ## Day 9: apply and run
 1. `git pull`, then `git apply --check day9.patch` and `git apply day9.patch`.
@@ -88,16 +112,22 @@
 - Supabase's SQL editor flags `$40` inside a string literal as an UPDATE without WHERE (its client-side parser trips on `$`); build the `$` with `chr(36)` instead.
 
 ## Open bugs / risks
-- Known injection gap: G05 (small payment to the known payee in a clean run). Fixes: invoice matching, per-payee daily budget, or carry taint across runs.
-- Every email to an outside address and every payment to a new account needs approval, including legitimate ones (the cost of closing G01 and G04). Both allowlists are static, one entry each, in tuples.yaml.
-- URL allowlist is exact-match and static (`example.com` only, in tuples.yaml); the mock read_web doesn't follow redirects, a real one would need checks per hop.
-- Anchoring window: rows after the latest anchor (up to 6 h) can be rewritten unnoticed until the next one. GitHub pauses scheduled workflows after 60 days without repo activity; re-enable it in the Actions tab if that happens.
-- `audit-anchors` branch: it carries `ui/vercel.json` with `git.deploymentEnabled: false` so Vercel should skip it. Untested; if Vercel still builds (and fails) previews for it, set an Ignored Build Step in the Vercel project.
-- UI agent grants are a static copy of tuples.yaml (`ui/src/lib/policy.ts`) — updated for G01; keep in sync on any policy change.
-- Carried: Gemini free tier flaky (scripted demo is the fallback); SvelteKit pinned to 2.70.4 (never `npm audit fix --force`); sign-out keeps the Auth0 session; kill-switch re-enable edge (wait ~1 s); asyncpg pool vs Supabase pooler; in-memory OpenFGA on Render loses runtime tuples (blocks delegation as designed); Supabase free project pauses after inactivity (the 6-hourly anchor job now queries it, which should keep it awake; unpause before a demo if not); Render cold start ~1 min (click the broker dot first).
+- No known gap left in the suite. That doesn't mean no risk. Invoice matching trusts whoever creates invoices (the admin key, i.e. accounts payable). A fake invoice entered there passes, the same way it would in a real AP system.
+- Every email to an outside address, every payment to a new account and every payment without an open invoice needs approval. Both allowlists are static (one entry each, in tuples.yaml).
+- Delegation: a token minted in the same second as a kill switch counts as revoked (wait about 1 s before re-enabling). Delegated tokens live at most until the delegation expires. Revocation is checked on every call, so a revoked link stops the next call even with a valid token.
+- Persistent OpenFGA shares the Supabase free-tier connection budget (max open conns 5, idle 2). Watch for "too many connections" on Render.
+- URL allowlist is exact-match and static; a real read_web would need checks on every redirect hop.
+- Anchoring window: rows after the latest anchor (up to 6 h) can be rewritten unnoticed until the next one. GitHub pauses scheduled workflows after 60 days without activity.
+- `audit-anchors` branch: `ui/vercel.json` with `git.deploymentEnabled: false` should make Vercel skip it. Untested. If Vercel still builds it, set an Ignored Build Step.
+- Carried:
+  - Gemini free tier is flaky; the scripted demo is the fallback.
+  - SvelteKit is pinned to 2.70.4 (never run `npm audit fix --force`).
+  - Sign-out keeps the Auth0 session.
+  - asyncpg pool vs the Supabase pooler.
+  - The Supabase free project pauses after inactivity.
+  - Render cold start takes about 1 minute.
 
 ## Next step
-Push Day 9 and run the Render suite. Then:
-1. Portfolio: resume bullets (21/22 attacks stopped worst case, the LLM numbers, +6.5 ms p95, anchored audit log), interview prep, README screenshot.
-2. Delegation chains (stretch, 2 to 3 days): persistent OpenFGA store on Render, token-exchange endpoint, new suite cases.
-3. Close G05 if wanted: per-payee daily budget (needs a running total, so state outside OpenFGA) or taint carried across runs.
+Apply Day 10, push, add `FGA_DB_PASSWORD` on Render, run the Render suite. Then:
+1. Portfolio: resume bullets (29/29 stopped worst case, delegation chains with token exchange and cascade revocation, persistent ReBAC store, anchored audit log, latency), interview prep, README screenshot of the Agents panel.
+2. Optional: a fresh LLM batch now that G05 is closed.

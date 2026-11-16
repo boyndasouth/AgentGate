@@ -16,7 +16,7 @@ Method
 
 Paths
   allow        mailer  query_customers {limit:1}       1 OpenFGA check + audit append
-  allow_amount finance transfer_funds {amount:40}      1 conditional check (amount + taint + payee)
+  allow_amount finance transfer_funds {amount:40}      invoice lookup + 1 conditional check + settle
   deny_scope   mailer  transfer_funds (not in token)   no OpenFGA; deny + audit append
   mint         POST /tokens (2 scopes, new session)    2 OpenFGA checks + 3 inserts + audit
                (measured every 5th round only, it creates a session each time)
@@ -93,9 +93,17 @@ def main() -> int:
         if status != want:
             raise SystemExit(f"{kind}: expected HTTP {want}, got {status}: {body.get('reason', body)}")
 
+    # Day 10: a small payment goes through alone only against an open invoice, and paying it
+    # closes it, so every timed payment gets its own invoice (created here, not timed).
+    total = args.warmup + args.rounds
+    bills: list[str] = []
+    for _ in range(total):
+        status, body, _ = gate.admin("POST", "/invoices", {"payee": "acct_acme_supplies", "amount": 40})
+        expect("invoice setup", status, body, 201)
+        bills.append(body["id"])
+
     print(f"AgentGate latency benchmark against {cfg.target} ({cfg.base_url}), "
           f"{args.rounds} rounds + {args.warmup} warm-up, slack={health.get('slack')}")
-    total = args.warmup + args.rounds
     for i in range(total):
         tok.fresh()
         keep = i >= args.warmup
@@ -103,7 +111,8 @@ def main() -> int:
             ("baseline", lambda: gate.request("GET", "/.well-known/jwks.json"), 200),
             ("allow", lambda: gate.tool(tok.mailer, "query_customers", {"limit": 1}), 200),
             ("allow_amount", lambda: gate.tool(tok.finance, "transfer_funds",
-                                               {"amount": 40, "to_account": "acct_acme_supplies", "memo": "bench"}), 200),
+                                               {"amount": 40, "to_account": "acct_acme_supplies", "memo": "bench",
+                                                "invoice_id": bills[i]}), 200),
             ("deny_scope", lambda: gate.tool(tok.mailer, "transfer_funds",
                                              {"amount": 40, "to_account": "ACCT-BENCH"}), 403),
         ]

@@ -112,12 +112,16 @@ def replay_tests(api: str, store_id: str, model_id: str, tests_file: Path) -> in
     failures = 0
     for test in suite.get("tests", []):
         print(f"\n[{test['name']}]")
+        # A test's own `tuples` (e.g. a sample delegation) go along with each request as
+        # contextual tuples, so the replay never writes them into the live store.
+        extra = {"contextual_tuples": {"tuple_keys": test["tuples"]}} if test.get("tuples") else {}
         for case in test.get("check", []) or []:
             got = {}
             for relation, expected in case["assertions"].items():
                 body = {
                     "authorization_model_id": model_id,
                     "tuple_key": {"user": case["user"], "relation": relation, "object": case["object"]},
+                    **extra,
                 }
                 if case.get("context") is not None:
                     body["context"] = case["context"]
@@ -141,6 +145,7 @@ def replay_tests(api: str, store_id: str, model_id: str, tests_file: Path) -> in
                     "type": case["type"],
                     "relation": relation,
                     "user": case["user"],
+                    **extra,
                 }
                 if case.get("context") is not None:
                     body["context"] = case["context"]

@@ -104,3 +104,53 @@ CREATE TABLE IF NOT EXISTS audit_events (
     prev_hash       text NOT NULL,
     hash            text NOT NULL
 );
+
+-- Day 10 (closes G05): the accounts-payable system's invoices (a mock of it). Finance may pay a
+-- small amount ALONE only against an open invoice from that payee for exactly that amount;
+-- paying it marks it paid, so paying the same invoice twice goes to a human. Invoices are
+-- created by an admin (POST /invoices), never by an agent or the orchestrator.
+CREATE TABLE IF NOT EXISTS invoices (
+    id          text PRIMARY KEY,
+    payee       text NOT NULL,
+    amount      numeric(12, 2) NOT NULL CHECK (amount > 0),
+    status      text NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'paid')),
+    created_by  text NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    paid_at     timestamptz,
+    paid_tx     text
+);
+INSERT INTO invoices (id, payee, amount, created_by)
+VALUES ('INV-1042', 'acct_acme_supplies', 40.00, 'seed') ON CONFLICT (id) DO NOTHING;
+
+-- Day 10: delegation chains. Agent A grants agent B part of its access for a while; B trades
+-- its own token for one that acts on A's behalf (RFC 8693-style token exchange). The OpenFGA
+-- tuples are the grant; this table is the record the gate checks for revocation and depth.
+CREATE TABLE IF NOT EXISTS delegations (
+    id              uuid PRIMARY KEY,
+    principal       text NOT NULL REFERENCES agents(id),   -- whose access is being used (the root)
+    delegator       text NOT NULL REFERENCES agents(id),   -- who granted this hop
+    delegate        text NOT NULL REFERENCES agents(id),   -- who receives it
+    tools           text[] NOT NULL,
+    parent_id       uuid REFERENCES delegations(id),       -- hop 2 points at hop 1
+    depth           int NOT NULL CHECK (depth BETWEEN 1 AND 2),
+    origin_session  uuid NOT NULL REFERENCES sessions(id),  -- delegator's session: its taint follows the grant
+    created_jti     uuid NOT NULL,                          -- token that created it
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    expires_at      timestamptz NOT NULL,
+    revoked_at      timestamptz,
+    revoked_reason  text
+);
+CREATE INDEX IF NOT EXISTS delegations_parent_idx ON delegations (parent_id);
+CREATE INDEX IF NOT EXISTS delegations_agents_idx ON delegations (delegator, delegate);
+
+-- Tokens minted by exchange: the agent calling (agent_id) acts for `principal` via these delegations.
+ALTER TABLE tokens ADD COLUMN IF NOT EXISTS principal      text;
+ALTER TABLE tokens ADD COLUMN IF NOT EXISTS delegation_ids uuid[];
+-- A delegated call that escalates: Approve checks the whole chain again (kill switch, revocation).
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS principal      text;
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS delegation_ids uuid[];
+
+-- Supabase exposes `public` through its REST API; the broker connects as postgres and bypasses RLS.
+-- (The six Day 3 tables are covered by deploy/supabase_rls.sql; new tables enable it here.)
+ALTER TABLE invoices    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delegations ENABLE ROW LEVEL SECURITY;

@@ -130,5 +130,15 @@ class Gate:
         return self.request("POST", f"/approvals/{approval_id}/cancel", None,
                             {"Authorization": f"Bearer {token}"})
 
+    def delegate(self, token: str, delegate: str, tools: list[str], ttl_seconds: int = 300, task: str = ""):
+        """Day 10: the token's holder grants `delegate` some of its tools."""
+        return self.request("POST", "/delegations", {"delegate": delegate, "tools": tools, "ttl_seconds": ttl_seconds,
+                                                     "task": task}, {"Authorization": f"Bearer {token}"})
+
+    def exchange(self, token: str, delegation_id: str, scopes: list[str], task: str = ""):
+        """Day 10: trade the agent's own token for one acting through `delegation_id`."""
+        return self.request("POST", "/tokens/exchange", {"delegation_id": delegation_id, "scopes": scopes,
+                                                         "task": task}, {"Authorization": f"Bearer {token}"})
+
     def admin(self, method: str, path: str, body: dict | None = None):
         return self.request(method, path, body, {"X-Admin-Key": self.cfg.admin_key})

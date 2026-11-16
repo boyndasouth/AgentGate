@@ -71,8 +71,10 @@ Show-Step "Finance token issued (expires_in=$($t.Body.expires_in)s, session $($t
 $fin = $t.Body.access_token
 $session = $t.Body.session_id
 
-# --- 2. ALLOW: $40 invoice ---------------------------------------------------
-$r = Invoke-Tool $fin "transfer_funds" @{ amount = 40; to_account = "acct_acme_supplies"; memo = "Invoice #1042" }
+# --- 2. ALLOW: $40 invoice (Day 10: it must be an open invoice in accounts payable) ---
+$inv = Invoke-Gate POST "/invoices" @{ payee = "acct_acme_supplies"; amount = 40 } $admin
+Show-Step "Accounts payable has open invoice $($inv.Body.id) for `$40" $inv 201
+$r = Invoke-Tool $fin "transfer_funds" @{ amount = 40; to_account = "acct_acme_supplies"; memo = "Invoice $($inv.Body.id)"; invoice_id = $inv.Body.id }
 Show-Step "ALLOW    finance pays a `$40 invoice" $r 200
 if ($r.Body.result) { Write-Host "       result: $($r.Body.result | ConvertTo-Json -Compress)" }
 

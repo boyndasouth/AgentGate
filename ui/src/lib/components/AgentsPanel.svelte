@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { POLICY } from '$lib/policy';
-	import type { Agent } from '$lib/types';
+	import { describeGrant, untilTime } from '$lib/grants';
+	import type { Agent, Delegation } from '$lib/types';
 
 	let {
 		agents,
@@ -22,12 +22,31 @@
 		if (!r.ok) actionError = `${agent.id}: ${r.error}`;
 		onchange();
 	}
+
+	// Day 10: revoke a delegation (and everything granted from it).
+	async function revoke(d: Delegation) {
+		if (!confirm(`Revoke ${d.delegate}'s access to ${d.tools.join(', ')} (acting for ${d.principal})? Anything granted from it is revoked too.`))
+			return;
+		busy = d.id;
+		actionError = null;
+		const r = await api(`/api/delegations/${d.id}/revoke`, { method: 'POST' });
+		busy = null;
+		if (!r.ok) actionError = `delegation ${d.id.slice(0, 8)}: ${r.error}`;
+		onchange();
+	}
+
+	function delegationLine(agentId: string, d: Delegation): string {
+		const until = `until ${untilTime(d.expires_at)}`;
+		if (d.role === 'granted') return `gave ${d.tools.join(', ')} to ${d.delegate} ${until}`;
+		const via = d.delegator !== d.principal ? ` via ${d.delegator}` : '';
+		return `acts for ${d.principal}${via} on ${d.tools.join(', ')} ${until}`;
+	}
 </script>
 
 <section class="card">
 	<header class="card-head">
 		<h2>Agents</h2>
-		<span class="muted small">10-minute tokens · scopes from OpenFGA tuples</span>
+		<span class="muted small">10-minute tokens · grants read live from OpenFGA</span>
 	</header>
 
 	{#if error}<p class="err">{error}</p>{/if}
@@ -45,16 +64,32 @@
 					<span class="pill {disabled ? 'deny' : 'allow'}">{disabled ? 'disabled' : 'active'}</span>
 				</div>
 				<ul class="grants">
-					{#each POLICY[agent.id] ?? [] as g}
-						<li>
-							<code>{g.tool}</code>
-							<span class="pill tiny {g.mode === 'direct' ? 'allow' : 'escalate'}">{g.mode === 'direct' ? 'direct' : 'needs approval'}</span>
-							{#if g.note}<span class="muted small">{g.note}</span>{/if}
-						</li>
+					{#if agent.grants === null}
+						<li class="muted small">grants unavailable: OpenFGA could not be read</li>
 					{:else}
-						<li class="muted small">no grants</li>
-					{/each}
+						{#each agent.grants ?? [] as g}
+							{@const note = describeGrant(g)}
+							<li>
+								<code>{g.tool}</code>
+								<span class="pill tiny {g.mode === 'direct' ? 'allow' : 'escalate'}">{g.mode === 'direct' ? 'direct' : 'needs approval'}</span>
+								{#if note}<span class="muted small">{note}</span>{/if}
+							</li>
+						{:else}
+							<li class="muted small">no grants</li>
+						{/each}
+					{/if}
 				</ul>
+				{#if agent.delegations?.length}
+					<ul class="grants">
+						{#each agent.delegations as d (d.id + d.role)}
+							<li>
+								<span class="pill tiny {d.role === 'received' ? 'escalate' : 'allow'}">{d.role === 'received' ? 'delegated to it' : 'delegated'}</span>
+								<span class="muted small">{delegationLine(agent.id, d)}{d.depth > 1 ? ' · hop 2' : ''}</span>
+								<button class="btn tiny" disabled={busy === d.id} onclick={() => revoke(d)}>{busy === d.id ? '…' : 'Revoke'}</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
 				<button
 					class="btn {disabled ? '' : 'danger'} wide"
 					disabled={busy === agent.id}

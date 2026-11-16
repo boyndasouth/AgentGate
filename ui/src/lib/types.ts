@@ -18,12 +18,38 @@ export interface AuditEvent {
 	hash?: string;
 }
 
+/** One OpenFGA grant of an agent on a tool, as the broker reads it (Day 10). */
+export interface Grant {
+	tool: string;
+	mode: 'direct' | 'approval';
+	condition?: string | null;
+	context?: Record<string, unknown>;
+	taints?: boolean;
+	approvers?: string[];
+}
+
+/** An active delegation this agent takes part in (Day 10). */
+export interface Delegation {
+	id: string;
+	principal: string;
+	delegator: string;
+	delegate: string;
+	tools: string[];
+	depth: number;
+	parent_id?: string | null;
+	expires_at: string;
+	role: 'granted' | 'received';
+}
+
 export interface Agent {
 	id: string;
 	owner?: string;
 	display_name?: string;
 	status?: string;
 	created_at?: string;
+	/** Read live from OpenFGA by the broker; null if OpenFGA couldn't be read. */
+	grants?: Grant[] | null;
+	delegations?: Delegation[];
 	[k: string]: unknown;
 }
 

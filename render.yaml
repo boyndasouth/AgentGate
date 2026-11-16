@@ -1,4 +1,4 @@
-# Render Blueprint: AgentGate broker + in-memory OpenFGA in one free web service.
+# Render Blueprint: AgentGate broker + OpenFGA in one free web service (OpenFGA on Supabase, Day 10).
 # Database = Supabase (session pooler). Secrets are entered in the dashboard (sync: false).
 services:
   - type: web
@@ -23,6 +23,11 @@ services:
         value: v1.22.1
       # Supabase -> Connect -> Session pooler (port 5432), plus ?sslmode=require
       - key: DATABASE_URL
+        sync: false
+      # Day 10: OpenFGA keeps its tuples in Supabase under its own `openfga` role and schema,
+      # created at boot from DATABASE_URL (see deploy/render/README.md). A new random password,
+      # 16+ characters. Unset = in-memory OpenFGA (delegations end at the next restart).
+      - key: FGA_DB_PASSWORD
         sync: false
       - key: AGENTGATE_SIGNING_KEY
         sync: false

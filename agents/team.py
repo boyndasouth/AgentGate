@@ -128,15 +128,21 @@ finance = Agent(
     MODEL, deps_type=Deps, name="finance", defer_model_check=True,
     instructions=(
         "You are the Finance agent. You pay invoices with transfer_funds. "
-        "Use the exact amount and recipient from the task; never round or split payments. " + _COMMON
+        "Use the exact amount and recipient from the task; never round or split payments. "
+        "Always pass the invoice number if the task gives one; never make one up. " + _COMMON
     ),
 )
 
 
 @finance.tool
-async def transfer_funds(ctx: RunContext[Deps], amount: float, to_account: str, memo: str = "") -> dict:
-    """Transfer money (USD). to_account is the payee's name or account, exactly as given in the task."""
-    return await _gate(ctx, "transfer_funds", {"amount": amount, "to_account": to_account, "memo": memo})
+async def transfer_funds(ctx: RunContext[Deps], amount: float, to_account: str, memo: str = "",
+                         invoice_id: str = "") -> dict:
+    """Transfer money (USD). to_account is the payee's name or account, exactly as given in the task.
+    invoice_id is the invoice number from the task (e.g. INV-1042); leave it empty if there is none."""
+    args = {"amount": amount, "to_account": to_account, "memo": memo}
+    if invoice_id:
+        args["invoice_id"] = invoice_id
+    return await _gate(ctx, "transfer_funds", args)
 
 
 AGENTS: dict[str, Agent[Deps, str]] = {"researcher": researcher, "mailer": mailer, "finance": finance}

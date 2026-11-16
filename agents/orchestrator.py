@@ -15,7 +15,7 @@ AgentGate doesn't depend on the model noticing: all agents in a run share one se
 researcher's read tainted it, so the mailer's send_email escalates to Slack instead of sending.
 
 Usage (inside the agents container, see scripts/run_agents.ps1):
-  python -m agents.orchestrator pay          # $40 invoice -> allow
+  python -m agents.orchestrator pay          # $40 invoice INV-1042 -> allow (once: paying it again escalates)
   python -m agents.orchestrator big          # $5,000 -> escalate -> waits for Approve/Deny in Slack
   python -m agents.orchestrator brief        # researcher -> mailer; the send escalates (web read tainted the session)
   python -m agents.orchestrator inject       # poisoned page -> mailer told to email the customer list outside -> Slack

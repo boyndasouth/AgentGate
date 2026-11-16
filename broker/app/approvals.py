@@ -14,6 +14,8 @@ Rules this module enforces:
 - Who may decide is policy, not config: the Slack user is mapped to `user:<name>`, then
   OpenFGA must say that user is an `approver` of this tool.
 - The kill switch still wins: Approve on a disabled agent's call is turned into a deny.
+  Day 10: for a delegated call, every agent in the chain must still be active and no delegation
+  in it revoked, or Approve becomes a deny.
 - Raw args live only while pending; every resolution sets `args = NULL`.
 - Every resolution (and every refused click) is a row in the hash-chained audit log,
   with the approver's identity in the `approver` column.
@@ -29,7 +31,7 @@ from typing import Any, Protocol
 
 import asyncpg
 
-from . import audit, taint
+from . import audit, invoices, taint
 from .fga import FGAClient, PolicyEngineError
 from .tools import TOOLS, parse_args
 
@@ -99,15 +101,18 @@ class ApprovalService:
     # ------------------------------------------------------------------ create
 
     async def create(self, conn: asyncpg.Connection, *, agent_id: str, session_id: str, task_id: str,
-                     tool: str, args: dict, args_hash: str, reason: str, session_tainted: bool) -> dict:
+                     tool: str, args: dict, args_hash: str, reason: str, session_tainted: bool,
+                     principal: str | None = None, delegation_ids: list[str] | None = None) -> dict:
         approval_id = uuid.uuid4()
         rec = await conn.fetchrow(
             """INSERT INTO approvals (id, agent_id, session_id, task_id, tool, args, args_hash, reason,
-                                      session_tainted, expires_at)
-               VALUES ($1, $2, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, now() + make_interval(secs => $10))
+                                      session_tainted, expires_at, principal, delegation_ids)
+               VALUES ($1, $2, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, now() + make_interval(secs => $10),
+                       $11, $12::uuid[])
                RETURNING *""",
             approval_id, agent_id, session_id, task_id, tool, args, args_hash, reason,
-            session_tainted, float(self.ttl_seconds))
+            session_tainted, float(self.ttl_seconds), principal,
+            [uuid.UUID(d) for d in delegation_ids] if delegation_ids else None)
         return dict(rec)
 
     async def announce(self, conn: asyncpg.Connection, row: dict, audit_id: int) -> bool:
@@ -190,9 +195,16 @@ class ApprovalService:
 
             note = ""
             if approve:
-                status = await conn.fetchval("SELECT status FROM agents WHERE id = $1", row["agent_id"])
-                if status != "active":
-                    approve, note = False, f"agent '{row['agent_id']}' was disabled while pending (kill switch)"
+                chain = list({row["agent_id"], row.get("principal") or row["agent_id"]})
+                off = await conn.fetchval(
+                    "SELECT array_agg(id ORDER BY id) FROM agents WHERE id = ANY($1::text[]) AND status <> 'active'",
+                    chain)
+                if off:
+                    approve, note = False, f"agent '{off[0]}' was disabled while pending (kill switch)"
+                elif row.get("delegation_ids") and await conn.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM delegations WHERE id = ANY($1::uuid[]) AND revoked_at IS NOT NULL)",
+                        row["delegation_ids"]):
+                    approve, note = False, "a delegation in the chain was revoked while pending"
 
             new_status = "approved" if approve else "denied"
             claimed = _row(await conn.fetchrow(
@@ -227,7 +239,16 @@ class ApprovalService:
         """Replay the approved call. The broker, not the agent, executes it."""
         tool = TOOLS[row["tool"]]
         try:
-            result = await tool.run(parse_args(tool, row["args"]))
+            parsed = parse_args(tool, row["args"])
+            async with conn.transaction():
+                # Day 10: an approved payment that names an open, matching invoice settles it, so
+                # it can't be paid again alone. (A human may approve paying without one.)
+                inv = getattr(parsed, tool.invoice_field, "") if tool.invoice_field else ""
+                settled = bool(inv) and await invoices.settle(conn, inv, getattr(parsed, tool.payee_field),
+                                                              getattr(parsed, tool.amount_field))
+                result = await tool.run(parsed)
+                if settled:
+                    await invoices.record_tx(conn, inv, result.get("tx_id", ""))
         except Exception as exc:   # noqa: BLE001 - report tool failure to the agent, keep the chain going
             return {"error": str(exc)}, f"tool failed: {exc}"
         # Day 5: an approved call to a tainting tool still taints the session before the

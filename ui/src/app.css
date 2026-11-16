@@ -70,6 +70,7 @@ h2 { font-size: 15px; margin: 0; letter-spacing: 0.01em; }
 /* pills */
 .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
 .pill.tiny { font-size: 11px; padding: 0 6px; }
+.btn.tiny { font-size: 11px; padding: 0 8px; margin-left: 4px; line-height: 1.6; }
 .pill.allow { color: #bbf7d0; background: #052e16; border-color: #166534; }
 .pill.escalate { color: #fde68a; background: #3b2506; border-color: #92400e; }
 .pill.deny { color: #fecaca; background: #3f0d0d; border-color: #7f1d1d; }

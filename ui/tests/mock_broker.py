@@ -10,6 +10,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ADMIN, ORCH = "admin-key", "orch-key"
 agents = {a: {"id": a, "owner": "user:shiwin", "display_name": a.title(), "status": "active"} for a in ("researcher", "mailer", "finance")}
 tokens, sessions, approvals, events = {}, {}, {}, []
+invoices = {}          # Day 10: id -> {"payee", "amount", "status"}
+GRANTS = {             # Day 10: what GET /agents reads from OpenFGA in the real broker
+    "researcher": [{"tool": "read_web", "mode": "direct", "condition": "untainted_or_allowed_host",
+                    "context": {"allowed_hosts": ["example.com"]}, "taints": True, "approvers": []}],
+    "mailer": [{"tool": "send_email", "mode": "direct", "condition": "untainted_allowed_recipient",
+                "context": {"allowed_recipient_domains": ["agentgate.example"]}, "taints": False, "approvers": ["user:shiwin"]},
+               {"tool": "send_email", "mode": "approval", "condition": None, "context": {}, "taints": False, "approvers": ["user:shiwin"]}],
+    "finance": [{"tool": "transfer_funds", "mode": "direct", "condition": "within_limit_open_invoice",
+                 "context": {"max_amount": 100, "allowed_payees": ["acct_acme_supplies"]}, "taints": False, "approvers": ["user:shiwin"]},
+                {"tool": "transfer_funds", "mode": "approval", "condition": None, "context": {}, "taints": False, "approvers": ["user:shiwin"]}],
+}
 revoked_agents = {}
 
 def audit(**kw):
@@ -43,7 +54,7 @@ class H(BaseHTTPRequestHandler):
             if a["status"] == "denied": return self.send(403, {"status": "denied", "reason": f"denied by {a['approver']}"})
             return self.send(200, {"status": a["status"]})
         if not self.admin(): return self.send(401, {"detail": "admin key required"})
-        if p == "/agents": return self.send(200, list(agents.values()))
+        if p == "/agents": return self.send(200, [{**a, "grants": GRANTS.get(a["id"], []), "delegations": []} for a in agents.values()])
         if p == "/approvals": return self.send(200, [{k: v for k, v in a.items() if k != "args"} for a in approvals.values() if a["status"] == "pending"])
         if p == "/audit/events": return self.send(200, list(reversed(events))[:50])
         self.send(404, {"detail": "not found"})
@@ -68,18 +79,27 @@ class H(BaseHTTPRequestHandler):
                 i = audit(event_type="tool_call", agent_id=ag, tool=tool, decision="deny", reason="token revoked (kill switch)", session_tainted=s["tainted"])
                 return self.send(403, {"decision": "deny", "reason": "token revoked (kill switch)", "tool": tool, "audit_id": i})
             args = b.get("args", {})
-            esc = (tool == "transfer_funds" and (args.get("amount", 0) > 100 or s["tainted"] or args.get("to_account") != "acct_acme_supplies")) or (tool == "send_email" and (s["tainted"] or not str(args.get("to", "")).lower().endswith("@agentgate.example")))
+            inv = invoices.get(args.get("invoice_id", ""))
+            inv_ok = bool(inv) and inv["status"] == "open" and inv["payee"] == args.get("to_account") and inv["amount"] == args.get("amount")
+            esc = (tool == "transfer_funds" and (args.get("amount", 0) > 100 or s["tainted"] or args.get("to_account") != "acct_acme_supplies" or not inv_ok)) or (tool == "send_email" and (s["tainted"] or not str(args.get("to", "")).lower().endswith("@agentgate.example")))
             if esc:
                 aid = str(uuid.uuid4()); reason = "session tainted by read_web" if s["tainted"] else ("recipient is not on the allowlist" if tool == "send_email" else "amount over limit")
                 approvals[aid] = {"id": aid, "agent_id": ag, "tool": tool, "reason": reason, "status": "pending", "session_tainted": s["tainted"], "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 120)), "args": args}
                 i = audit(event_type="tool_call", agent_id=ag, tool=tool, decision="escalate", reason=reason, session_tainted=s["tainted"])
                 return self.send(202, {"decision": "escalate", "reason": reason, "tool": tool, "audit_id": i, "approval_id": aid, "status": "pending", "session_tainted": s["tainted"]})
+            if tool == "transfer_funds": inv["status"] = "paid"
             pre = s["tainted"]
             i = audit(event_type="tool_call", agent_id=ag, tool=tool, decision="allow", reason="direct_invoker", session_tainted=pre)
             if tool in ("read_web", "read_inbox") and not s["tainted"]:
                 s["tainted"] = True; audit(event_type="session_tainted", agent_id=ag, decision="info", reason=f"tainted by {tool}", session_tainted=True)
             return self.send(200, {"decision": "allow", "reason": "direct_invoker", "tool": tool, "audit_id": i, "session_tainted": s["tainted"], "result": {"ok": True, "customers": [{"name": "Ada"}]} if tool == "query_customers" else {"ok": True}})
         if not self.admin(): return self.send(401, {"detail": "admin key required"})
+        if p == "/invoices":
+            iid = b.get("id") or "INV-" + uuid.uuid4().hex[:8].upper()
+            invoices[iid] = {"payee": b["payee"], "amount": b["amount"], "status": "open"}
+            return self.send(201, {"id": iid, **invoices[iid]})
+        if p.startswith("/delegations/") and p.endswith("/revoke"):
+            return self.send(404, {"detail": "unknown delegation"})
         if p.endswith("/disable") or p.endswith("/enable"):
             ag = p.split("/")[2]; dis = p.endswith("/disable")
             agents[ag]["status"] = "disabled" if dis else "active"

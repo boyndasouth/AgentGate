@@ -72,6 +72,23 @@ class Run {
 		return ok ? r.data : null;
 	}
 
+	/** Day 10: accounts payable (an admin, not the agent) adds the bill the agent will pay. */
+	async invoice(amount: number): Promise<string | null> {
+		const r = await broker<{ id: string }>('/invoices', {
+			method: 'POST',
+			body: { payee: 'acct_acme_supplies', amount }
+		});
+		const ok = r.status === 201;
+		this.steps.push({
+			actor: 'accounts payable',
+			action: ok ? `open invoice ${r.data.id}: $${amount.toLocaleString('en-US')} → acct_acme_supplies` : 'add invoice',
+			outcome: ok ? 'allow' : 'error',
+			http: r.status,
+			reason: ok ? 'added by an admin; the agent can only pay it, never create it' : detail(r)
+		});
+		return ok ? r.data.id : null;
+	}
+
 	async call(agent: string, token: string, tool: string, args: Record<string, unknown>, label: string) {
 		const r: BrokerResponse<ToolData> = await broker<ToolData>(`/tools/${tool}`, {
 			method: 'POST',
@@ -111,8 +128,12 @@ function explain(outcome: Outcome, reason: string, what: string): string {
 	}
 }
 
-async function transfer(amount: number, invoice: string): Promise<RunResult> {
+async function transfer(amount: number): Promise<RunResult> {
 	const run = new Run(amount <= 100 ? 'pay' : 'big');
+	// Day 10 (G05): a small payment goes through alone only against an open invoice, and paying
+	// it closes it, so every demo run pays a fresh one.
+	const invoice = await run.invoice(amount);
+	if (!invoice) return { scenario: run.scenario, steps: run.steps, agentSays: 'Accounts payable has no invoice to pay.' };
 	const tok = await run.mint('finance', ['transfer_funds'], `Pay invoice ${invoice}`);
 	if (!tok) return { scenario: run.scenario, steps: run.steps, agentSays: 'I was not issued a token.' };
 
@@ -121,7 +142,7 @@ async function transfer(amount: number, invoice: string): Promise<RunResult> {
 		'finance',
 		tok.access_token,
 		'transfer_funds',
-		{ amount, to_account: 'acct_acme_supplies', memo: `Invoice ${invoice}` },
+		{ amount, to_account: 'acct_acme_supplies', memo: `Invoice ${invoice}`, invoice_id: invoice },
 		`transfer_funds $${amount.toLocaleString('en-US')} → acct_acme_supplies`
 	);
 	return {
@@ -213,9 +234,9 @@ export type Scenario = (typeof SCENARIOS)[number];
 export function runScenario(s: Scenario, heldToken?: string): Promise<RunResult> {
 	switch (s) {
 		case 'pay':
-			return transfer(40, 'INV-1042');
+			return transfer(40);
 		case 'big':
-			return transfer(5000, 'INV-2077');
+			return transfer(5000);
 		case 'inject':
 			return inject();
 		case 'kill-start':

@@ -41,6 +41,7 @@ class TransferFundsArgs(msgspec.Struct, forbid_unknown_fields=True):
     amount: float
     to_account: str
     memo: str = ""
+    invoice_id: str = ""        # Day 10: the open invoice this pays (G05); without one, a human decides
 
 
 class QueryCustomersArgs(msgspec.Struct, forbid_unknown_fields=True):
@@ -116,7 +117,8 @@ async def send_email(a: SendEmailArgs) -> dict:
 async def transfer_funds(a: TransferFundsArgs) -> dict:
     if a.amount <= 0:
         raise ValueError("amount must be positive")
-    tx = {"tx_id": f"tx_{uuid.uuid4().hex[:12]}", "amount": a.amount, "to_account": a.to_account}
+    tx = {"tx_id": f"tx_{uuid.uuid4().hex[:12]}", "amount": a.amount, "to_account": a.to_account,
+          **({"invoice_id": a.invoice_id} if a.invoice_id else {})}
     LEDGER.append(tx)
     return {"status": "completed", **tx}
 
@@ -138,6 +140,7 @@ class Tool:
     url_field: str | None = None              # arg whose hostname is sent to OpenFGA as `host` (Day 7)
     recipient_field: str | None = None        # arg whose domain is sent to OpenFGA as `recipient_domain` (Day 8)
     payee_field: str | None = None            # arg sent to OpenFGA as `payee`, exactly as given (Day 9)
+    invoice_field: str | None = None          # arg naming the invoice; OpenFGA gets `invoice_matches` (Day 10)
 
 
 TOOLS: dict[str, Tool] = {
@@ -146,7 +149,8 @@ TOOLS: dict[str, Tool] = {
         Tool("read_web", ReadWebArgs, read_web, taints=True, url_field="url"),
         Tool("read_inbox", ReadInboxArgs, read_inbox, taints=True),
         Tool("send_email", SendEmailArgs, send_email, recipient_field="to"),
-        Tool("transfer_funds", TransferFundsArgs, transfer_funds, amount_field="amount", payee_field="to_account"),
+        Tool("transfer_funds", TransferFundsArgs, transfer_funds, amount_field="amount", payee_field="to_account",
+             invoice_field="invoice_id"),
         Tool("query_customers", QueryCustomersArgs, query_customers),
     )
 }

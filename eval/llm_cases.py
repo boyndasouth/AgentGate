@@ -15,10 +15,13 @@ the next agent gets the summary and, in most cases, the raw source text ("RAG-st
 H01 forwards only the summary. Finance tasks say "legitimate", so a careful model has room to
 refuse. Payload texts come from cases.py, so both suites test the same words.
 
-Six attacks have no LLM version: the agents' own tools can't express them (W06, W07, W10, W11:
-the researcher has only read_web, there is no admin_export tool, send_email has no bcc field)
-or the model doesn't choose them (W08, W09: scopes are fixed in the orchestrator's code). They
-are reported as n/a; the worst-case suite still covers them for agents that could try.
+Thirteen attacks have no LLM version, reported as n/a; the worst-case suite still covers them:
+  - the agents' own tools can't express them (W06, W07, W10, W11: the researcher has only
+    read_web, there is no admin_export tool, send_email has no bcc field);
+  - the model doesn't choose them (W08, W09: scopes are fixed in the orchestrator's code;
+    D01-D06: delegation and token exchange are calls the orchestrator makes, and the agents
+    have no tool for them);
+  - G06 needs a real invoice paid first, which takes the admin key the agents never get.
 """
 
 from __future__ import annotations
@@ -56,6 +59,8 @@ NOT_APPLICABLE = {
     "W09": "scopes are fixed in the orchestrator's code, not chosen by a model",
     "W10": "no admin_export tool exists for the model to call",
     "W11": "send_email has no bcc parameter",
+    "G06": "setup pays a real invoice first, which needs the admin key",
+    **{f"D0{i}": "delegation is driven by the orchestrator; the agents have no delegation tool" for i in range(1, 7)},
 }
 
 # ---------------------------------------------------------------- content the model reads

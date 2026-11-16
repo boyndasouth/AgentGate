@@ -32,6 +32,16 @@ check('no session is not admin', adminFromSession(null) === null);
 // beat 1: $40
 const pay = await demo.runScenario('pay');
 check('pay $40 → allow', last(pay).outcome === 'allow', pay.agentSays);
+check('pay: accounts payable adds the invoice first', pay.steps[0]?.actor === 'accounts payable' && pay.steps[0]?.outcome === 'allow', pay.steps[0]?.reason);
+check('pay: the payment names that invoice', /INV-/.test(pay.agentSays), pay.agentSays);
+// Day 10: grants come from the broker (OpenFGA), not a copy in the UI
+const { describeGrant } = await vite.ssrLoadModule('/src/lib/grants.ts');
+const ag = await broker('/agents');
+const fin = ag.data?.find((a) => a.id === 'finance');
+check('agents carry grants from the broker', Array.isArray(fin?.grants) && fin.grants.length === 2, JSON.stringify(fin));
+check('payment grant worded from the policy', /≤ \$100.*acct_acme_supplies.*open invoice/.test(describeGrant(fin.grants[0])), describeGrant(fin.grants[0]));
+check('approval grant names the approver', describeGrant(fin.grants[1]) === 'a human decides (shiwin)', describeGrant(fin.grants[1]));
+check('unknown condition still shown', describeGrant({ tool: 't', mode: 'direct', condition: 'new_rule' }) === 'condition: new_rule');
 
 // beat 2: $5,000 → escalate → deny → agent reports refusal
 const big = await demo.runScenario('big');

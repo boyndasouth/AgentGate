@@ -5,8 +5,8 @@ OpenFGA gets its own login role `openfga` and its own schema `openfga`:
     pooler (Supavisor) doesn't reliably pass a search_path from the connection string, so a
     URL parameter could silently put OpenFGA's tables in `public`, which Supabase serves through
     its REST API;
-  - the role owns only its schema and is granted nothing in `public`, so OpenFGA can't read or
-    write the broker's tables.
+  - the role may only use and create tables in its schema (it owns those tables, not the schema)
+    and is granted nothing in `public`, so OpenFGA can't read or write the broker's tables.
 
 Run with DATABASE_URL (the broker's admin connection) and FGA_DB_PASSWORD (OpenFGA's own secret).
 The password is sent as a SCRAM-SHA-256 verifier, never in plain text, so it can't end up in a
@@ -66,8 +66,11 @@ async def main() -> None:
         exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", ROLE)
         verb = "ALTER" if exists else "CREATE"
         await conn.execute(f"{verb} ROLE {ROLE} WITH LOGIN PASSWORD {verifier}")
-        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA} AUTHORIZATION {ROLE}")
-        await conn.execute(f"ALTER SCHEMA {SCHEMA} OWNER TO {ROLE}")
+        # The schema stays owned by the admin user; openfga gets USAGE + CREATE on it, so the tables
+        # `openfga migrate` creates are owned by openfga. Making openfga the schema OWNER would need
+        # SET ROLE openfga, which a non-superuser creator (Supabase's postgres, Postgres 16+) lacks.
+        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+        await conn.execute(f"GRANT USAGE, CREATE ON SCHEMA {SCHEMA} TO {ROLE}")
         await conn.execute(f"ALTER ROLE {ROLE} SET search_path = {SCHEMA}")
         db = await conn.fetchval("SELECT current_database()")
         await conn.execute(f'GRANT CONNECT ON DATABASE "{db}" TO {ROLE}')

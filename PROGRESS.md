@@ -1,7 +1,7 @@
 # PROGRESS
 
-**Current day:** Day 12: forwarding to HTTP upstreams, credentials, agent and grant API (2026-11-16). `day12.patch` delivered against main at 4d0dd58; **not applied yet**. Day 11 is done and deployed. Second day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
-**Build status:** Days 0-11 are done and deployed. Day 12 makes agents, grants, approvers and tools API data (no seed file needed), and adds `http` upstreams: an allowed call goes to a real API with a credential only the broker holds.
+**Current day:** Day 12: forwarding to HTTP upstreams, credentials, agent and grant API (2026-11-16). `day12.patch` (against main at 4d0dd58) applied and pushed; the Render redeploy check passed. `day12-followup.patch` delivered. Day 11 is done and deployed. Second day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
+**Build status:** Days 0-12 are done and deployed. Day 12 makes agents, grants, approvers and tools API data (no seed file needed), and adds `http` upstreams: an allowed call goes to a real API with a credential only the broker holds.
 **Headline numbers after Day 12 (workspace):** **33/33 attacks stopped** (14 blocked, 19 escalated, 0 allowed): the 29 from Day 11 unchanged plus R01-R04. Day 12 tests 190/190, registry tests 118/118. Allowed-call latency unchanged (main and the patch measured back to back in the workspace: +3.9 / +5.2 ms and +3.9 / +5.4 ms). Shiwin's machine after Day 11: +5.5 ms p50 / +6.8 ms p95. LLM numbers are from Day 9.
 
 **Repo:** github.com/boyndasouth/AgentGate (branch main, Day 11 at 4d0dd58) · **Broker:** https://agentgate-broker.onrender.com (Day 12 patch is OpenAPI v0.9.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
@@ -16,7 +16,9 @@
 - [x] **UI:** register an agent, add/remove grants (mode, params, risk class, warning before a direct grant on a risky tool), a Tools panel (register, switch on/off, approvers, problems). Writes go through server routes that add `X-Admin-Via` from the Auth0 session.
 - [x] **`mock-upstream`** in compose (echo, CRM, email, payments, redirect, slow, big).
 - [x] Tests: `broker/tests/test_day12.py` (190 checks) + `scripts/test_day12.ps1`; suite R01-R04; `eval/day12_check.py` for the Render redeploy check; UI smoke 46 checks.
-- [ ] Shiwin: apply `day12.patch`, run the local checks, push, Render suite 33/33, redeploy check on Render
+- [x] Shiwin: applied `day12.patch` and pushed (2026-11-16)
+- [x] Redeploy check on Render passed (2026-11-16): `setup`, Manual Deploy, `verify` (the API grant was still in OpenFGA and the call still allowed), `cleanup` (grant removed, the next call refused, tool removed); audit chain valid each time. `d12check-bot` stays registered with no grants.
+- [ ] Commit the Render suite result (`eval/results/*.json`, 33/33)
 
 ## Day 12: apply and deploy
 1. `git pull`, then `git apply --check day12.patch` and `git apply day12.patch`.
@@ -24,7 +26,7 @@
 3. `.\scripts\run_eval.ps1 suite` (expect 33/33: 14 blocked, 19 escalated), `.\scripts\test_day12.ps1` (expect 190/190; the seed-sync check prints "skipped" in the broker image, which has no PyYAML: that part is checked on Render in step 6), `.\scripts\test_registry.ps1` (expect 118/118), `.\scripts\demo_day2.ps1`.
 4. UI: `cd ui; npm run check; npm run build`; optional `python tests/mock_broker.py 8765` + `node tests/smoke.mjs` (46 checks). Then open the local UI: Agents → `+ Register agent`, `+ Grant`; Tools → `+ Register tool`.
 5. Commit and push. Render rebuilds the broker; the new tables are created at boot (nothing to run in the SQL editor). In the deploy log, after `15 sanity checks passed`, the seed line now reads `seed tuples=12 + api tuples=N`; on this first boot it also says the `grants` table isn't created yet. Vercel rebuilds the UI. Deploy order doesn't matter much: until Render is live, the new UI's forms get a 404/405 from the old broker, and the old UI never calls the new endpoints.
-6. `.\scripts\run_eval.ps1 suite -Target render` (33/33). Then the redeploy check: `py eval\day12_check.py setup --target render`, Render → Manual Deploy, wait until live, `py eval\day12_check.py verify --target render`, then `cleanup`. Commit `eval/results/*.json`.
+6. `.\scripts\run_eval.ps1 suite -Target render` (33/33). Then the redeploy check, in the eval container (Windows `py` failed to reach Render with a hidden error): `docker run --rm -v "${PWD}:/w" -w /w python:3.12-slim python eval/day12_check.py setup --target render`, Render → Manual Deploy, wait until live, the same command with `verify`, then with `cleanup`. Commit `eval/results/*.json`.
 7. Optional, a real upstream on Render: add `UPSTREAM_<NAME>` in the dashboard (redeploys), register an `http` tool naming it, grant it. Plain http and private addresses are refused there by design.
 
 ## Day 12: tested before delivery (workspace: Postgres 16 as a non-superuser with CREATEROLE, OpenFGA v1.22.1 in memory, mock upstream, broker at the patch)
@@ -167,7 +169,7 @@
 
 ## What works
 - Everything from Day 6 (local + deployed UI, Slack approvals, Realtime feed, kill switch, tamper beat).
-- Evals: `.\scripts\run_eval.ps1 suite|bench [-Target render]` (Docker, python:3.12-slim, stdlib only) or `py eval\injection_suite.py`. The suite cancels its own escalations; with Slack on it still posts ~11 messages. The benchmark writes ~1,300 audit rows: run it locally, not against prod.
+- Evals: `.\scripts\run_eval.ps1 suite|bench [-Target render]` (Docker, python:3.12-slim, stdlib only). Run any other `eval/*.py` the same way (`docker run --rm -v "${PWD}:/w" -w /w python:3.12-slim python eval/<script>.py ...`): Windows Python failed the HTTPS request to Render on Day 12, cause not found. The suite cancels its own escalations; with Slack on it still posts ~11 messages. The benchmark writes ~1,300 audit rows: run it locally, not against prod.
 - Policy changes: edit `policy/`, run `.\scripts\fga.ps1 model test --tests tests.fga.yaml` (path relative to policy/), `.\scripts\export_model_json.ps1`, `py scripts/load_store.py --replace`, `docker compose up -d --build broker`; pushing redeploys Render, which reseeds OpenFGA at boot.
 - Tamper beat (safe version): note the injection's `send_email` escalate row by `id` (highest id with tool_call / send_email / escalate), copy `decision` + `reason` first, edit, Verify names that id, paste back, Verify intact before moving on.
 
@@ -199,4 +201,4 @@
   - Render cold start takes about 1 minute.
 
 ## Next step
-Apply and deploy Day 12 (steps above). Then Day 13 (agents log in as themselves), in a new chat. Still open: Auth0 M2M or hashed per-agent API keys (check the Auth0 free-tier M2M quota first).
+Apply `day12-followup.patch` (eval docs, clearer health error) and commit the Render suite results. Then Day 13 (agents log in as themselves), in a new chat. First decision: Auth0 M2M or hashed per-agent API keys (check the Auth0 free-tier M2M quota first).

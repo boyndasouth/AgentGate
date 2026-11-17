@@ -1,9 +1,12 @@
 """Day 12 done check, part "a redeploy keeps API-made grants", for Render (works locally too).
 
-  python eval/day12_check.py setup  --target render   # register d12check-bot + a tool, grant it, call it
-  (push something or click "Manual Deploy" on Render, wait until it is live)
-  python eval/day12_check.py verify --target render   # the grant is still there and still works
-  python eval/day12_check.py cleanup --target render  # remove the grant and the tool
+Run it in the same container as scripts/run_eval.ps1 (Windows Python may fail the HTTPS
+request to Render; the eval client is only tested in python:3.12-slim):
+
+  docker run --rm -v "${PWD}:/w" -w /w python:3.12-slim python eval/day12_check.py setup --target render
+  (Render: Manual Deploy, wait until it is live)
+  ... same with verify    # the grant is still there and still works
+  ... same with cleanup   # remove the grant and the tool, the next call is refused
 
 The tool is a built-in mock (customer lookup), so no upstream credential is needed on Render.
 The agent `d12check-bot` stays registered (agents are disabled, never deleted). Stdlib only.

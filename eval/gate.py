@@ -106,15 +106,18 @@ class Gate:
     def wait_healthy(self, max_wait: float = 120.0) -> dict:
         """Render's free tier sleeps; the first request can take ~1 min."""
         deadline = time.monotonic() + max_wait
+        last = "no answer"
         while True:
             try:
                 status, body, _ = self.request("GET", "/health")
                 if status == 200 and body.get("openfga"):
                     return body
-            except OSError:
-                pass
+                last = f"HTTP {status} {body}"
+            except OSError as e:
+                last = f"{type(e).__name__}: {e}"
             if time.monotonic() > deadline:
-                raise SystemExit("broker not healthy (is it running? is OpenFGA up?)")
+                raise SystemExit(f"broker not healthy at {self.cfg.base_url}/health "
+                                 f"(is it running? is OpenFGA up?) last: {last}")
             time.sleep(3)
 
     def mint(self, agent: str, scopes: list[str], task: str, session_id: str | None = None):

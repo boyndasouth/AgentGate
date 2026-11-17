@@ -1,7 +1,7 @@
 {
   "info": {
     "title": "AgentGate",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "description": "Identity and permissions broker for AI agents."
   },
   "openapi": "3.1.0",
@@ -1093,6 +1093,37 @@
                       "extra": {}
                     }
                   ]
+                }
+              }
+            }
+          }
+        },
+        "deprecated": false,
+        "security": [
+          {
+            "AdminKey": []
+          }
+        ]
+      }
+    },
+    "/tools": {
+      "get": {
+        "tags": [
+          "tools"
+        ],
+        "summary": "ListTools",
+        "operationId": "ToolsListTools",
+        "responses": {
+          "200": {
+            "description": "Request fulfilled, document follows",
+            "headers": {},
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
                 }
               }
             }

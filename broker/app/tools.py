@@ -1,52 +1,19 @@
 """Five mock tools. They stand in for real Gmail / Stripe / CRM integrations.
 
-Each tool has a typed argument struct (validated before the policy check) and a
-`taints` flag: tools that return untrusted outside content. After any successful call
-to a tainting tool, the gate marks the whole session tainted (Day 5, see taint.py).
-`amount_field`, `url_field`, `recipient_field` and `payee_field` name the arguments the policy looks at.
+Since Day 11 these are only the IMPLEMENTATIONS behind registry rows with
+`upstream.kind = "builtin"`. What a tool's arguments look like, whether it taints the session
+and which arguments the policy looks at all live in the `tools` table (see registry.py and
+schema.sql). A handler gets the arguments as a dict, already validated against the row's
+JSON Schema and with the schema's defaults filled in.
 
-Agents never see tool API keys. A real integration would read its key from the
-broker's environment here, after the gate has allowed the call.
+Agents never see tool API keys. A real integration reads its key inside the broker, after the
+gate has allowed the call (Day 12: HTTP upstreams).
 """
 
 from __future__ import annotations
 
-import re
-import unicodedata
-import urllib.parse
 import uuid
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
-
-import msgspec
-
-# ---------- argument schemas ----------
-
-
-class ReadWebArgs(msgspec.Struct, forbid_unknown_fields=True):
-    url: str
-
-
-class ReadInboxArgs(msgspec.Struct, forbid_unknown_fields=True):
-    limit: int = 5
-
-
-class SendEmailArgs(msgspec.Struct, forbid_unknown_fields=True):
-    to: str
-    subject: str
-    body: str
-
-
-class TransferFundsArgs(msgspec.Struct, forbid_unknown_fields=True):
-    amount: float
-    to_account: str
-    memo: str = ""
-    invoice_id: str = ""        # Day 10: the open invoice this pays (G05); without one, a human decides
-
-
-class QueryCustomersArgs(msgspec.Struct, forbid_unknown_fields=True):
-    limit: int = 10
-
+from typing import Awaitable, Callable
 
 # ---------- fake data ----------
 
@@ -100,123 +67,40 @@ LEDGER: list[dict] = []     # completed mock transfers
 # ---------- implementations ----------
 
 
-async def read_web(a: ReadWebArgs) -> dict:
-    return {"url": a.url, "content": _PAGES.get(a.url, "404: page not found")}
+async def read_web(a: dict) -> dict:
+    return {"url": a["url"], "content": _PAGES.get(a["url"], "404: page not found")}
 
 
-async def read_inbox(a: ReadInboxArgs) -> dict:
-    return {"messages": _INBOX[: max(0, a.limit)]}
+async def read_inbox(a: dict) -> dict:
+    return {"messages": _INBOX[: max(0, int(a.get("limit", 5)))]}
 
 
-async def send_email(a: SendEmailArgs) -> dict:
-    msg = {"id": str(uuid.uuid4()), "to": a.to, "subject": a.subject}
+async def send_email(a: dict) -> dict:
+    msg = {"id": str(uuid.uuid4()), "to": a["to"], "subject": a["subject"]}
     OUTBOX.append(msg)
     return {"status": "sent", **msg}
 
 
-async def transfer_funds(a: TransferFundsArgs) -> dict:
-    if a.amount <= 0:
+async def transfer_funds(a: dict) -> dict:
+    amount, invoice_id = float(a["amount"]), a.get("invoice_id", "")
+    if amount <= 0:
         raise ValueError("amount must be positive")
-    tx = {"tx_id": f"tx_{uuid.uuid4().hex[:12]}", "amount": a.amount, "to_account": a.to_account,
-          **({"invoice_id": a.invoice_id} if a.invoice_id else {})}
+    tx = {"tx_id": f"tx_{uuid.uuid4().hex[:12]}", "amount": amount, "to_account": a["to_account"],
+          **({"invoice_id": invoice_id} if invoice_id else {})}
     LEDGER.append(tx)
     return {"status": "completed", **tx}
 
 
-async def query_customers(a: QueryCustomersArgs) -> dict:
-    return {"customers": _CUSTOMERS[: max(0, min(a.limit, len(_CUSTOMERS)))]}
+async def query_customers(a: dict) -> dict:
+    return {"customers": _CUSTOMERS[: max(0, min(int(a.get("limit", 10)), len(_CUSTOMERS)))]}
 
 
-# ---------- registry ----------
-
-
-@dataclass(frozen=True)
-class Tool:
-    name: str
-    args_type: type
-    run: Callable[[Any], Awaitable[dict]]
-    taints: bool = False                      # returns untrusted outside content
-    amount_field: str | None = None           # arg sent to OpenFGA as `amount`
-    url_field: str | None = None              # arg whose hostname is sent to OpenFGA as `host` (Day 7)
-    recipient_field: str | None = None        # arg whose domain is sent to OpenFGA as `recipient_domain` (Day 8)
-    payee_field: str | None = None            # arg sent to OpenFGA as `payee`, exactly as given (Day 9)
-    invoice_field: str | None = None          # arg naming the invoice; OpenFGA gets `invoice_matches` (Day 10)
-
-
-TOOLS: dict[str, Tool] = {
-    t.name: t
-    for t in (
-        Tool("read_web", ReadWebArgs, read_web, taints=True, url_field="url"),
-        Tool("read_inbox", ReadInboxArgs, read_inbox, taints=True),
-        Tool("send_email", SendEmailArgs, send_email, recipient_field="to"),
-        Tool("transfer_funds", TransferFundsArgs, transfer_funds, amount_field="amount", payee_field="to_account",
-             invoice_field="invoice_id"),
-        Tool("query_customers", QueryCustomersArgs, query_customers),
-    )
+# Registry rows with upstream {"kind": "builtin"} run the handler with the tool's own name,
+# or the one named in upstream.handler.
+BUILTINS: dict[str, Callable[[dict], Awaitable[dict]]] = {
+    "read_web": read_web,
+    "read_inbox": read_inbox,
+    "send_email": send_email,
+    "transfer_funds": transfer_funds,
+    "query_customers": query_customers,
 }
-
-
-def parse_args(tool: Tool, raw: dict) -> Any:
-    """Validate raw JSON args against the tool's schema. Raises msgspec.ValidationError."""
-    return msgspec.convert(raw, tool.args_type)
-
-
-def amount_of(tool: Tool, parsed: Any) -> float:
-    return float(getattr(parsed, tool.amount_field)) if tool.amount_field else 0.0
-
-
-def host_of(tool: Tool, parsed: Any) -> str:
-    """Day 7 (G03): the URL's hostname for OpenFGA's `host` context, lowercased, trailing dot
-    dropped. urlsplit takes the real host from tricks like https://example.com@evil.example/.
-    '' for tools without a URL, non-http(s) schemes and unparseable URLs; a tainted session
-    can never match '' against the allowlist, so those fail closed."""
-    if not tool.url_field:
-        return ""
-    try:
-        parts = urllib.parse.urlsplit(str(getattr(parsed, tool.url_field)).strip())
-        if parts.scheme.lower() not in ("http", "https"):
-            return ""
-        return policy_safe((parts.hostname or "").rstrip("."))
-    except ValueError:
-        return ""
-
-
-# One plain ASCII address, nothing else: no display name, no list, no comments, no quoting.
-_PLAIN_ADDRESS = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)")
-
-
-def recipient_domain_of(tool: Tool, parsed: Any) -> str:
-    """Day 8 (G01): the recipient's domain for OpenFGA's `recipient_domain` context, lowercased.
-    '' for tools without a recipient and for anything that isn't exactly one plain address
-    ("a@x, b@y", "Name <a@x>", non-ASCII look-alikes, a trailing dot). '' is never on an
-    allowlist, so an address the gate can't read with certainty goes to a human."""
-    if not tool.recipient_field:
-        return ""
-    # No strip(): the tool gets the argument as sent, so the gate must judge it as sent.
-    m = _PLAIN_ADDRESS.fullmatch(str(getattr(parsed, tool.recipient_field)))
-    return m.group(1).lower() if m else ""
-
-
-def policy_safe(value: str) -> str:
-    """Day 9: OpenFGA rejects a check whose context holds a control character (newline, tab,
-    U+0000-U+001F, U+007F-U+009F), and the gate would then fail closed with a misleading
-    "policy engine unavailable". Such a value can't be on any allowlist, so it becomes ''."""
-    return "" if any(unicodedata.category(c) == "Cc" for c in value) else value
-
-
-def payee_of(tool: Tool, parsed: Any) -> str:
-    """Day 9 (G04): the payee for OpenFGA's `payee` context, exactly as sent: no trimming, no case
-    folding, because the tool pays the argument as sent. '' for tools without a payee."""
-    return policy_safe(str(getattr(parsed, tool.payee_field))) if tool.payee_field else ""
-
-
-def allowlist_reason(tool: Tool, parsed: Any) -> str | None:
-    """What to say when an allowlisted argument is why a call needs a human. Account numbers stay
-    out of the reason (it goes into the audit log, where arguments are kept only as an HMAC);
-    the approver sees the full arguments in Slack."""
-    if tool.recipient_field:
-        domain = recipient_domain_of(tool, parsed)
-        return f"recipient domain '{domain}' is not on the allowlist" if domain else "recipient is not one plain address"
-    if tool.payee_field:
-        return "payee is not on the allowlist"
-    return None

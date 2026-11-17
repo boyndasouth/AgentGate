@@ -33,7 +33,8 @@ import asyncpg
 
 from . import audit, invoices, taint
 from .fga import FGAClient, PolicyEngineError
-from .tools import TOOLS, parse_args
+from . import registry
+from .registry import REGISTRY
 
 log = logging.getLogger("agentgate.approvals")
 
@@ -71,8 +72,9 @@ def summarize_args(tool: str, args: dict | None) -> list[tuple[str, str]]:
     the audit log keeps the HMAC of the args, never the values."""
     if not args:
         return []
-    # jsonb reorders keys; show them in the tool's own argument order.
-    order = getattr(TOOLS[tool].args_type, "__struct_fields__", ()) if tool in TOOLS else ()
+    # jsonb reorders keys; show them in the tool's own argument order (required ones first).
+    known = REGISTRY.peek(tool)
+    order = known.arg_order if known else ()
     keys = [k for k in order if k in args] + [k for k in args if k not in order]
     out = []
     for key, value in [(k, args[k]) for k in keys][:_MAX_FIELDS]:
@@ -205,6 +207,13 @@ class ApprovalService:
                         "SELECT EXISTS (SELECT 1 FROM delegations WHERE id = ANY($1::uuid[]) AND revoked_at IS NOT NULL)",
                         row["delegation_ids"]):
                     approve, note = False, "a delegation in the chain was revoked while pending"
+                else:
+                    # Day 11: a tool switched off (or broken) in the registry while the call waited
+                    # must not run on Approve, the same way the kill switch beats a pending approval.
+                    tool = await REGISTRY.get(conn, row["tool"])
+                    gone = f"unknown tool '{row['tool']}'" if tool is None else tool.unavailable_reason()
+                    if gone:
+                        approve, note = False, f"{gone} (changed while pending)"
 
             new_status = "approved" if approve else "denied"
             claimed = _row(await conn.fetchrow(
@@ -237,16 +246,19 @@ class ApprovalService:
 
     async def _run(self, conn: asyncpg.Connection, row: dict) -> tuple[dict, str]:
         """Replay the approved call. The broker, not the agent, executes it."""
-        tool = TOOLS[row["tool"]]
+        tool = REGISTRY.peek(row["tool"])       # decide() has just synced the registry
         try:
-            parsed = parse_args(tool, row["args"])
+            if tool is None or not tool.usable:
+                raise RuntimeError(f"tool '{row['tool']}' is not available")
+            # Validated again: the row may have a new schema since the call was escalated.
+            args = registry.validate(tool, row["args"])
+            ctx = registry.policy_inputs(tool, args)
             async with conn.transaction():
                 # Day 10: an approved payment that names an open, matching invoice settles it, so
                 # it can't be paid again alone. (A human may approve paying without one.)
-                inv = getattr(parsed, tool.invoice_field, "") if tool.invoice_field else ""
-                settled = bool(inv) and await invoices.settle(conn, inv, getattr(parsed, tool.payee_field),
-                                                              getattr(parsed, tool.amount_field))
-                result = await tool.run(parsed)
+                inv = ctx.invoice_id or ""
+                settled = bool(inv) and await invoices.settle(conn, inv, ctx.payee, ctx.amount)
+                result = await registry.run(tool, args)
                 if settled:
                     await invoices.record_tx(conn, inv, result.get("tx_id", ""))
         except Exception as exc:   # noqa: BLE001 - report tool failure to the agent, keep the chain going

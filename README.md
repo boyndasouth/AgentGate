@@ -322,8 +322,8 @@ Optional: Slack approvals ([`deploy/slack/README.md`](deploy/slack/README.md)), 
 | Threat | Control | Where it's enforced |
 | --- | --- | --- |
 | Prompt injection makes an agent send data out | Session taint → `send_email` needs approval | Gate (`taint.py`) + OpenFGA `untainted_allowed_recipient` condition |
-| Injection the gate never saw arrive (stored in internal data, or carried into a new run) emails data out | `send_email` alone only to allowlisted recipient domains; anyone else → approval | OpenFGA `untainted_allowed_recipient` + address parsing in `tools.py` |
-| Injection leaks data through a URL the agent fetches | Tainted session: `read_web` only to allowlisted hosts | OpenFGA `untainted_or_allowed_host` + host parsing in `tools.py` |
+| Injection the gate never saw arrive (stored in internal data, or carried into a new run) emails data out | `send_email` alone only to allowlisted recipient domains; anyone else → approval | OpenFGA `untainted_allowed_recipient` + address parsing in `registry.py` |
+| Injection leaks data through a URL the agent fetches | Tainted session: `read_web` only to allowlisted hosts | OpenFGA `untainted_or_allowed_host` + host parsing in `registry.py` |
 | Injection makes an agent move money | Taint, the amount limit, a payee allowlist and a matching open invoice in one condition; anything outside it → approval | OpenFGA `within_limit_open_invoice` + `invoices.py` |
 | Injection gets a known vendor paid money it isn't owed, or paid twice | Small payments only against an open invoice for that payee and amount; paying it closes it, atomically | `invoices.py` (match + settle in the payment's transaction) |
 | A delegate does more than the agent that delegated to it | Delegated calls are judged as the principal; the delegate's own grants don't count | `main.py` gate + `delegation.py` |
@@ -333,7 +333,7 @@ Optional: Slack approvals ([`deploy/slack/README.md`](deploy/slack/README.md)), 
 | Hijacked orchestrator asks for extra scopes | Every scope is checked against policy at issuance | `POST /tokens` |
 | Leaked or stolen token | 10-minute expiry, bound to one task; kill switch revokes it mid-session | `tokens.py` + `revocations` table, checked on every call |
 | Forged token, `alg: none`, algorithm confusion | Only `EdDSA` accepted; issuer and audience checked | `tokens.py` |
-| Smuggled tools or arguments | Unknown tools 404; strict schemas reject unknown fields | Gate (`tools.py`, msgspec) |
+| Smuggled tools or arguments | Unknown and disabled tools are refused before the policy is asked; each tool's JSON Schema rejects unknown, missing and mistyped arguments | Gate (`registry.py`, the `tools` table) |
 | Agent changes arguments after approval | Broker stores the call and replays it itself on Approve | `approvals.py` |
 | Approval message used for phishing / spoofing | Agent-supplied text shown as `plain_text` only | `slack.py` |
 | Someone other than an approver clicks Approve | Clicker must be an OpenFGA `approver` of the tool; first decision wins | `approvals.py` |
@@ -358,6 +358,25 @@ Optional: Slack approvals ([`deploy/slack/README.md`](deploy/slack/README.md)), 
 
 ASI04 (supply chain) and ASI05 (code execution) are out of scope: the demo agents run no generated code and the tools are mocks.
 
+### Tool registry: tools are data
+
+Since Day 11 a tool is a row in the `tools` table, not Python code. The gate reads everything it needs to judge a call from that row:
+
+| Column | What the gate does with it |
+| --- | --- |
+| `args_schema` | JSON Schema (2020-12). Arguments must match exactly; unknown arguments are refused even if the schema forgets to say so. Reasons name the argument, never its value |
+| `risk_class` | `read`, `write`, `egress`, `money` or `destructive` |
+| `context_map` | Which argument feeds which policy input, e.g. `{"amount": "amount", "payee": "to_account", "invoice": "invoice_id"}`. The OpenFGA conditions are unchanged |
+| `taints_session` | Whether a successful call taints the session (default: yes) |
+| `upstream` | Where the call goes. Today only `builtin` (the mock tools); HTTP and MCP upstreams come next |
+| `enabled` | Off by default for a new row |
+
+It fails closed. An unknown or disabled tool is refused before OpenFGA is asked, and so is a row the broker can't fully understand (for example a `context_map` that names an argument the schema doesn't have): the gate never fills in a made-up value such as amount 0. A new tool has no grants, so nobody can call it until a policy says so.
+
+The broker caches the registry and checks one version number per call, kept by a database trigger, so a change takes effect on the next call without a restart. A change it finds that way is written to the audit log (`registry_changed`), which covers edits made straight in SQL. Disabling a tool also stops an approval that was waiting for it. `GET /tools` (admin) shows the registry as the gate sees it. Cost: about +0.1 ms on an allowed call in the workspace.
+
+`.\scripts\test_registry.ps1` runs 117 checks: schema mismatch, extra argument, disabled tool, unknown tool, and a `context_map` that points at a missing argument.
+
 ## Limitations and future work
 
 - **Accounts payable is trusted.** Invoice matching moves the trust to whoever can add invoices (here an admin; in real life the AP system and its vendor portal). A planted invoice under $100 to an approved vendor would be paid.
@@ -366,6 +385,7 @@ ASI04 (supply chain) and ASI05 (code execution) are out of scope: the demo agent
 - **The URL allowlist is exact-match and static.** Adding a host is a tuple change. A real deployment would want per-task allowlists and checks on redirects, which the mock `read_web` doesn't follow.
 - **Anchoring has a window.** Rows written after the latest anchor (up to 6 hours) can still be rewritten unnoticed until the next one. Someone holding both the broker's signing key and push access to the repo could forge anchors; database access alone isn't enough. A public transparency log would remove the trust in the repo.
 - **Mock tools.** Real OAuth integrations (Gmail, Stripe) would sit behind the same gate; the broker would hold their tokens.
+- **The registry has no write API yet.** Tools are added and changed with SQL; registering tools, agents and grants through the API is the next step. Changes made while the broker is down are not audited (it only sees the difference between two loads). `pattern` rules in a tool's schema run as Python regexes, so whoever may edit the registry is trusted not to write a slow one.
 - **Delegation is driven by code, not by the models.** The agents have no delegation tool, so the LLM-in-the-loop suite can't test it (D cases are n/a there); the worst-case suite covers it. Grants are created by agents' tokens through the API and revoked in the admin UI; there is no UI to create one.
 - **OpenFGA on Supabase is unmeasured on Render.** Every check now reads Postgres over the network instead of memory; the latency numbers above are from the local compose stack, where OpenFGA already ran on Postgres.
 - **Taint is all-or-nothing.** A trusted-source allowlist (your own docs site) would cut needless approvals, at the cost of trusting that source.
@@ -376,7 +396,7 @@ ASI04 (supply chain) and ASI05 (code execution) are out of scope: the demo agent
 | Layer | Choice |
 | --- | --- |
 | Policy | OpenFGA v1.22.1 (Zanzibar-style ReBAC with conditions) |
-| Broker | Python, Litestar, msgspec, asyncpg, PyJWT (Ed25519), httpx |
+| Broker | Python, Litestar, msgspec, jsonschema, asyncpg, PyJWT (Ed25519), httpx |
 | Agents | Pydantic AI + Gemini (fallbacks: Gemini Flash-Lite, Groq) |
 | Approvals | Slack Bolt for Python (Socket Mode locally, HTTP mode deployed) |
 | Data + live feed | Supabase Postgres + Realtime (Auth0 via Third-Party Auth, RLS) |
@@ -387,7 +407,7 @@ ASI04 (supply chain) and ASI05 (code execution) are out of scope: the demo agent
 
 ```
 agentgate/
-├── broker/      Litestar API: tokens, tool gateway, decision engine, taint, approvals, Slack, audit, delegation, invoices
+├── broker/      Litestar API: tokens, tool gateway, tool registry, decision engine, taint, approvals, Slack, audit, delegation, invoices
 ├── policy/      model.fga, tuples.yaml (single source of truth), tests.fga.yaml, model.json
 ├── agents/      Pydantic AI agents, orchestrator, gate client, offline tests
 ├── ui/          SvelteKit admin UI (Auth0, Supabase Realtime, demo runner)

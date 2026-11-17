@@ -26,7 +26,7 @@ from litestar.handlers.base import BaseRouteHandler
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 
-from . import audit, delegation, invoices, taint
+from . import audit, delegation, invoices, registry, taint
 from .approvals import ApprovalError, ApprovalService, Approver, admin_view, agent_view
 from .config import load_settings
 from .db import create_pool
@@ -36,7 +36,7 @@ from .keys import SigningKey
 from .slack import SLACK_EVENTS_PATH, SlackApprovals
 from .delegation import DelegationError
 from .tokens import TokenError, check_not_revoked, decode_token, issue_token
-from .tools import TOOLS, allowlist_reason, amount_of, host_of, parse_args, payee_of, recipient_domain_of
+from .registry import REGISTRY, ArgsError, ContextError
 
 log = logging.getLogger("agentgate")
 
@@ -54,6 +54,14 @@ async def lifespan(app: Litestar) -> AsyncGenerator[None, None]:
         log.warning("OpenFGA store %s not reachable at startup; calls will fail closed", settings.fga_store_id)
 
     # Day 4: approvals + Slack. Slack is optional: without it, approvals are decided via the admin API.
+    # Day 11: tools come from the `tools` table. Loaded once here, then kept fresh on every lookup.
+    app.state.registry = REGISTRY
+    async with app.state.pool.acquire() as conn:
+        await REGISTRY.load(conn)
+    unusable = [t.name for t in REGISTRY.all() if t.problem]
+    log.info("tool registry: %d tools (%d enabled)%s", len(REGISTRY.all()), sum(t.usable for t in REGISTRY.all()),
+             f"; UNUSABLE: {', '.join(unusable)}" if unusable else "")
+
     approvals = ApprovalService(app.state.pool, app.state.fga, ttl_seconds=settings.approval_ttl_seconds)
     app.state.approvals = approvals
     app.state.slack = None
@@ -256,9 +264,13 @@ async def create_token(data: TokenRequest, state: State, conn: asyncpg.Connectio
         return await refuse(403, f"agent '{data.agent_id}' is disabled (kill switch)")
     if not scopes:
         return await refuse(400, "request at least one scope")
-    unknown = [s for s in scopes if s not in TOOLS]
+    await REGISTRY.sync(conn)
+    unknown = [s for s in scopes if REGISTRY.peek(s) is None]
     if unknown:
         return await refuse(400, f"unknown tool scope(s): {', '.join(unknown)}")
+    unusable = [s for s in scopes if not REGISTRY.peek(s).usable]
+    if unusable:     # Day 11: no token for a tool that is switched off or misconfigured
+        return await refuse(400, f"disabled or misconfigured tool scope(s): {', '.join(unusable)}")
 
     try:
         not_granted = [s for s in scopes if not await may_hold_scope(fga, data.agent_id, s)]
@@ -473,7 +485,7 @@ async def list_agents(state: State, conn: asyncpg.Connection) -> list[dict]:
             grants.setdefault(t["user"][6:], []).append({
                 "tool": tool, "mode": "direct" if t["relation"] == "direct_invoker" else "approval",
                 "condition": cond.get("name"), "context": cond.get("context") or {},
-                "taints": bool(TOOLS[tool].taints) if tool in TOOLS else False,
+                "taints": bool(REGISTRY.peek(tool).taints) if REGISTRY.peek(tool) else False,
                 "approvers": None})
     for gs in grants.values():
         for g in gs:
@@ -524,8 +536,17 @@ async def enable_agent(agent_id: str, conn: asyncpg.Connection) -> dict:
 # ---------------------------------------------------------------- tool gateway
 
 
+@get("/tools", tags=["tools"], guards=[admin_guard], dependencies={"conn": Provide(provide_conn)},
+     security=[{"AdminKey": []}])
+async def list_tools(conn: asyncpg.Connection) -> list[dict]:
+    """Day 11: the tool registry as the gate sees it. `problem` says why a row can't be used
+    (every call to such a tool is denied). `credential_ref` is a name, never a secret."""
+    await REGISTRY.sync(conn)
+    return [t.public() for t in REGISTRY.all()]
+
+
 @post("/tools/{name:str}", tags=["tools"], status_code=200, dependencies={"conn": Provide(provide_conn)},
-      security=[{"BearerAuth": []}])
+      security=[{"BearerAuth": []}], request_max_body_size=registry.MAX_BODY_BYTES)
 async def call_tool(name: str, data: ToolCall, request: Request, state: State,
                     conn: asyncpg.Connection) -> Response[ToolResult]:
     """Every agent tool call goes through here.
@@ -566,18 +587,32 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     if st is None:
         ev = await record("deny", "unknown session")
         return _json(401, ToolResult(decision="deny", reason="unknown session", tool=name, audit_id=ev["id"]))
-    tool = TOOLS.get(name)
+    #    Day 11: the tool comes from the registry table. Unknown, disabled and misconfigured
+    #    tools are refused here, before OpenFGA is asked.
+    tool = await REGISTRY.get(conn, name) if registry.TOOL_NAME.fullmatch(name) else None
     if tool is None:
-        ev = await record("deny", f"unknown tool '{name}'")
-        return _json(404, ToolResult(decision="deny", reason=f"unknown tool '{name}'", tool=name,
+        ev = await record("deny", f"unknown tool '{name[:64]}'")
+        return _json(404, ToolResult(decision="deny", reason=f"unknown tool '{name[:64]}'", tool=name,
                                      audit_id=ev["id"], session_tainted=tainted))
     args_hash = audit.args_digest(settings.args_hmac_key, data.args)
+    why = tool.unavailable_reason()
+    if why is not None:
+        ev = await record("deny", why, args_hash=args_hash)
+        return _json(403, ToolResult(decision="deny", reason=why, tool=name, audit_id=ev["id"],
+                                     session_tainted=tainted))
     try:
-        parsed = parse_args(tool, data.args)
-    except msgspec.ValidationError as exc:
+        args = registry.validate(tool, data.args)
+    except ArgsError as exc:
         ev = await record("deny", f"invalid arguments: {exc}", args_hash=args_hash)
         return _json(422, ToolResult(decision="deny", reason=f"invalid arguments: {exc}", tool=name,
                                      audit_id=ev["id"], session_tainted=tainted))
+    try:
+        ctx = registry.policy_inputs(tool, args)     # built from the row's context_map
+    except ContextError as exc:
+        why = f"can't build the policy context, failing closed: {exc}"
+        ev = await record("deny", why, args_hash=args_hash)
+        return _json(403, ToolResult(decision="deny", reason=why, tool=name, audit_id=ev["id"],
+                                     session_tainted=tainted))
 
     # 4b. Day 10: a delegated token works only while every hop is live and covers this tool.
     acting = ""
@@ -598,17 +633,16 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
 
     # 4c. Day 10 (G05): does the payment match an open invoice? OpenFGA gets the answer as context.
     inv = invoices.Match(False)
-    if tool.invoice_field:
-        inv = await invoices.match(conn, getattr(parsed, tool.invoice_field), payee_of(tool, parsed),
-                                   amount_of(tool, parsed))
+    if ctx.invoice_id is not None:
+        inv = await invoices.match(conn, ctx.invoice_id, ctx.payee, ctx.amount)
 
     # 5. Policy decision, with the session's taint as OpenFGA context. A delegated call is judged
     #    AS its principal: the delegate can never do more than the agent it acts for.
     decision = await decide(state.fga, agent_id=claims.principal, tool=name, token_scopes=claims.scopes,
-                            amount=amount_of(tool, parsed), session_tainted=st.tainted,
-                            tainted_by=st.tainted_by, host=host_of(tool, parsed),
-                            recipient_domain=recipient_domain_of(tool, parsed), payee=payee_of(tool, parsed),
-                            allowlist_reason=allowlist_reason(tool, parsed),
+                            amount=ctx.amount, session_tainted=st.tainted,
+                            tainted_by=st.tainted_by, host=ctx.host,
+                            recipient_domain=ctx.recipient_domain, payee=ctx.payee,
+                            allowlist_reason=ctx.allowlist_reason,
                             invoice_matches=inv.ok, invoice_reason=inv.why)
     if acting:
         decision = type(decision)(decision.outcome, decision.reason + acting, decision.policy_error)
@@ -638,12 +672,11 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     #    calls racing to pay the same invoice can't both go through.
     try:
         async with conn.transaction():
-            if inv.ok and not await invoices.settle(conn, getattr(parsed, tool.invoice_field),
-                                                    payee_of(tool, parsed), amount_of(tool, parsed)):
+            if inv.ok and not await invoices.settle(conn, ctx.invoice_id, ctx.payee, ctx.amount):
                 raise ValueError("the invoice was paid by another call a moment ago")
-            result = await tool.run(parsed)
+            result = await registry.run(tool, args)
             if inv.ok:
-                await invoices.record_tx(conn, getattr(parsed, tool.invoice_field), result.get("tx_id", ""))
+                await invoices.record_tx(conn, ctx.invoice_id, result.get("tx_id", ""))
     except ValueError as exc:
         ev = await record("allow", f"{decision.reason}; tool rejected input: {exc}", args_hash=args_hash)
         return _json(400, ToolResult(decision="allow", reason=f"tool error: {exc}", tool=name,
@@ -773,7 +806,7 @@ async def slack_events(scope: dict, receive: Any, send: Any) -> None:
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.7.0",
+    version="0.8.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),
@@ -786,7 +819,7 @@ app = Litestar(
     route_handlers=[health, jwks, audit_verify, audit_checkpoint, audit_hashes, audit_events, create_token, revoke_token,
                     create_delegation, exchange_token, list_delegations, revoke_delegation, create_invoice,
                     list_invoices, list_agents,
-                    disable_agent, enable_agent, call_tool,
+                    disable_agent, enable_agent, list_tools, call_tool,
                     poll_approval, cancel_approval, list_approvals, decide_approval, slack_events],
     lifespan=[lifespan],
     openapi_config=openapi_config,

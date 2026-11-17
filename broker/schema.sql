@@ -90,7 +90,7 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tainted_at timestamptz;
 CREATE TABLE IF NOT EXISTS audit_events (
     id              bigint PRIMARY KEY,          -- assigned by the broker, gap-free
     ts              text NOT NULL,               -- canonical UTC string, hashed as-is
-    event_type      text NOT NULL,               -- 'tool_call' | 'token_issued' | 'token_denied' | 'token_revoked' | 'agent_disabled' | 'agent_enabled' | 'approval_resolved' | 'approval_refused' | 'session_tainted'
+    event_type      text NOT NULL,               -- 'tool_call' | 'token_issued' | 'token_denied' | 'token_revoked' | 'agent_disabled' | 'agent_enabled' | 'approval_resolved' | 'approval_refused' | 'session_tainted' | 'registry_changed' | ...
     agent_id        text,
     session_id      text,
     task_id         text,
@@ -150,7 +150,90 @@ ALTER TABLE tokens ADD COLUMN IF NOT EXISTS delegation_ids uuid[];
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS principal      text;
 ALTER TABLE approvals ADD COLUMN IF NOT EXISTS delegation_ids uuid[];
 
+-- Day 11: the tool registry. A tool is a row, not Python code: what its arguments look like,
+-- how risky it is, which arguments the policy looks at, and where the call goes.
+-- Safe defaults: a new row taints the session and is DISABLED until someone turns it on.
+CREATE TABLE IF NOT EXISTS tools (
+    name            text PRIMARY KEY CHECK (name ~ '^[a-z][a-z0-9_.]{1,63}$'),
+    description     text NOT NULL DEFAULT '',
+    args_schema     jsonb NOT NULL,                  -- JSON Schema 2020-12; unknown arguments are always refused
+    risk_class      text NOT NULL CHECK (risk_class IN ('read', 'write', 'egress', 'money', 'destructive')),
+    context_map     jsonb NOT NULL DEFAULT '{}',     -- policy input -> argument name: amount, url, recipient, payee, invoice
+    taints_session  boolean NOT NULL DEFAULT true,   -- returns outside content; the session is tainted after a call
+    upstream        jsonb NOT NULL,                  -- {"kind": "builtin" | "http" | "mcp", ...}; http and mcp arrive on Day 12+
+    credential_ref  text,                            -- NAME of the upstream credential (Day 12), never the secret
+    enabled         boolean NOT NULL DEFAULT false,
+    version         integer NOT NULL DEFAULT 1,      -- bumped by the trigger on every real change
+    created_by      text NOT NULL,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+-- One row, one number: bumped whenever `tools` changes, so the broker can tell with a single
+-- primary-key read that its cached registry is stale (also after an edit made directly in SQL).
+CREATE TABLE IF NOT EXISTS registry_state (
+    id      boolean PRIMARY KEY DEFAULT true CHECK (id),
+    version bigint NOT NULL DEFAULT 1
+);
+INSERT INTO registry_state (id) VALUES (true) ON CONFLICT (id) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION agentgate_tool_row_changed() RETURNS trigger
+LANGUAGE plpgsql SET search_path = '' AS $fn$
+BEGIN
+    IF to_jsonb(NEW) - 'version' - 'updated_at' IS DISTINCT FROM to_jsonb(OLD) - 'version' - 'updated_at' THEN
+        NEW.version := OLD.version + 1;
+        NEW.updated_at := now();
+    ELSE
+        NEW.version := OLD.version;
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION agentgate_registry_bump() RETURNS trigger
+LANGUAGE plpgsql SET search_path = '' AS $fn$
+BEGIN
+    UPDATE public.registry_state SET version = version + 1;
+    RETURN NULL;
+END
+$fn$;
+
+CREATE OR REPLACE TRIGGER tools_row_changed BEFORE UPDATE ON tools
+    FOR EACH ROW EXECUTE FUNCTION agentgate_tool_row_changed();
+CREATE OR REPLACE TRIGGER tools_registry_bump AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON tools
+    FOR EACH STATEMENT EXECUTE FUNCTION agentgate_registry_bump();
+
+-- The five demo tools, now ordinary registry rows. Their mock code stays in tools.py as
+-- built-in handlers. ON CONFLICT DO NOTHING: a row edited later is never overwritten at boot.
+INSERT INTO tools (name, description, args_schema, risk_class, context_map, taints_session, upstream, enabled, created_by)
+VALUES
+    ('read_web', 'Fetch a web page (mock).',
+     '{"type": "object", "required": ["url"], "additionalProperties": false,
+       "properties": {"url": {"type": "string", "maxLength": 2048}}}',
+     'read', '{"url": "url"}', true, '{"kind": "builtin"}', true, 'seed'),
+    ('read_inbox', 'Read the latest inbox messages (mock).',
+     '{"type": "object", "additionalProperties": false,
+       "properties": {"limit": {"type": "integer", "default": 5}}}',
+     'read', '{}', true, '{"kind": "builtin"}', true, 'seed'),
+    ('send_email', 'Send an email (mock).',
+     '{"type": "object", "required": ["to", "subject", "body"], "additionalProperties": false,
+       "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}}}',
+     'egress', '{"recipient": "to"}', false, '{"kind": "builtin"}', true, 'seed'),
+    ('transfer_funds', 'Move money to an account (mock).',
+     '{"type": "object", "required": ["amount", "to_account"], "additionalProperties": false,
+       "properties": {"amount": {"type": "number"}, "to_account": {"type": "string"},
+                      "memo": {"type": "string", "default": ""}, "invoice_id": {"type": "string", "default": ""}}}',
+     'money', '{"amount": "amount", "payee": "to_account", "invoice": "invoice_id"}', false,
+     '{"kind": "builtin"}', true, 'seed'),
+    ('query_customers', 'List customers from the CRM (mock).',
+     '{"type": "object", "additionalProperties": false,
+       "properties": {"limit": {"type": "integer", "default": 10}}}',
+     'read', '{}', false, '{"kind": "builtin"}', true, 'seed')
+ON CONFLICT (name) DO NOTHING;
+
 -- Supabase exposes `public` through its REST API; the broker connects as postgres and bypasses RLS.
 -- (The six Day 3 tables are covered by deploy/supabase_rls.sql; new tables enable it here.)
 ALTER TABLE invoices    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE delegations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tools          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE registry_state ENABLE ROW LEVEL SECURITY;

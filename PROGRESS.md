@@ -1,10 +1,41 @@
 # PROGRESS
 
-**Current day:** Day 10: delegation chains, G05 closed with invoice matching, persistent OpenFGA on Render, UI grants served by the broker (2026-11-16). `day10.patch` delivered. **Not yet applied.**
-**Build status:** one-week MVP complete (Day 7). Day 8 closed G01 and G02 and added `via` and anchoring. Day 9 closed G04 and added the LLM suite. Day 10 finishes the last stretch goal (delegation chains) and closes G05. There are no known gaps left in the suite.
-**Headline numbers after Day 10 (workspace, fresh DB):** **29/29 attacks stopped** (11 blocked, 18 escalated, 0 allowed). Latency on Shiwin's machine is still the Day 8 figure (+5.2 ms p50 / +6.5 ms p95). In the workspace, an invoice-backed payment adds about 0.7 ms over a plain allowed call. LLM numbers are from Day 9 and were measured before G05 closed.
+**Current day:** Day 11: tool registry as data (2026-11-16). `day11.patch` delivered. **Not yet applied.** First day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
+**Build status:** Days 0-10 are done and deployed (one-week MVP, known gaps G01-G05 closed, delegation chains, persistent OpenFGA). Day 11 moves the five demo tools out of Python and into a `tools` table; the gate's behaviour is unchanged for them.
+**Headline numbers after Day 11 (workspace, fresh DB):** **29/29 attacks stopped** (11 blocked, 18 escalated, 0 allowed), the same as Day 10, now with tools read from the database. Registry tests: 117/117. The registry adds about +0.1 ms p50 to an allowed call in the workspace (+3.0 ms before, +3.1 ms after). Latency on Shiwin's machine is still the Day 8 figure (+5.2 ms p50 / +6.5 ms p95). LLM numbers are from Day 9.
 
-**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 9 at cfabd2a) · **Broker:** https://agentgate-broker.onrender.com (Day 10 patch is OpenAPI v0.7.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA now in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 10 at 10c5a19) · **Broker:** https://agentgate-broker.onrender.com (Day 11 patch is OpenAPI v0.8.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+
+## Day 11 checklist
+- [x] **`tools` table** (`broker/schema.sql`): `name`, `description`, `args_schema` (JSON Schema 2020-12), `risk_class`, `context_map`, `taints_session`, `upstream`, `credential_ref`, `enabled`, `version`, `created_by`, `created_at`, `updated_at`. Column defaults are the safe ones: a new row is disabled and taints the session.
+- [x] **The five demo tools are rows** with `upstream: {"kind": "builtin"}`. `broker/app/tools.py` only keeps the mock implementations, keyed by name.
+- [x] **Arguments are validated with `jsonschema`** (pinned 4.26.0). Unknown arguments are refused even when a schema leaves out `additionalProperties`. Size caps: 64 KiB body (413), 16,384 characters per string, 8 levels of nesting, 1,000 values. Reasons name the argument and never repeat a value or an odd argument name.
+- [x] **The OpenFGA context is built from `context_map`** (`amount`, `url`, `recipient`, `payee`, `invoice`). Condition parameter names and the parsing (`policy_safe`, plain-address regex, URL host) are unchanged; they moved to `broker/app/registry.py`.
+- [x] **Fails closed.** Unknown, disabled and misconfigured tools are refused before OpenFGA is asked. A row the broker can't fully understand (bad schema, `context_map` naming a missing, optional or wrongly typed argument, an upstream kind that isn't built yet) is kept with a `problem` and every call to it is denied. No token is issued for such a tool.
+- [x] **Cache with refresh on change.** A statement trigger bumps `registry_state.version`; the gate compares it on every lookup (one primary-key read) and reloads when it differs. No restart needed, and it also catches edits made in the Supabase SQL editor.
+- [x] **Registry changes are audited.** A reload that finds a difference writes `registry_changed` events ("enabled true -> false (version 1 -> 2)"). A row trigger bumps `version` only when something really changed.
+- [x] **A tool disabled while an approval is pending** turns Approve into a deny, like the kill switch.
+- [x] **`GET /tools`** (admin key): the registry as the gate sees it, with each row's `problem`.
+- [x] Tests: `broker/tests/test_registry.py` (117 checks) and `scripts/test_registry.ps1`. The suite stays at 29 cases (see DECISIONS).
+- [ ] Shiwin: apply `day11.patch`, run the local checks, push, check the Render deploy log, run the Render suite
+
+## Day 11: apply and deploy
+1. `git pull`, then `git apply --check day11.patch` and `git apply day11.patch`.
+2. `docker compose up -d --build broker` (a rebuild is needed: `jsonschema` is new in `requirements.txt`). The broker creates the `tools` table at startup. In `docker compose logs broker`, look for `tool registry: 5 tools (5 enabled)`. No policy change, so no `load_store.py` run.
+3. `.\scripts\run_eval.ps1 suite` (expect 29/29), `.\scripts\test_registry.ps1` (expect 117/117), `.\scripts\demo_day2.ps1`.
+4. Commit and push. Render rebuilds the broker and creates the table in Supabase at boot; nothing to run in the SQL editor. In the deploy log, look for `tool registry: 5 tools (5 enabled)` after the usual `15 sanity checks passed`.
+5. `.\scripts\run_eval.ps1 suite -Target render`; commit `eval/results/*.json`. Do not run `test_registry.ps1` against Render: it edits rows.
+6. Optional: `.\scripts\run_eval.ps1 bench` to see the registry's cost on your machine.
+
+## Day 11: tested before delivery (workspace: Postgres 16 as a non-superuser with CREATEROLE, OpenFGA v1.22.1 in memory, broker at the patch on a fresh clone, fresh database)
+- Suite 29/29 (11 blocked, 18 escalated), no regressions, chain valid. W10 still 404, W11 still 422 (reason is now "unexpected argument 'bcc'").
+- `test_registry.py`: 117/117, run twice in a row (it restores every row). Unit: 20 kinds of bad row are unusable, 8 kinds of bad arguments are refused without a value in the reason, the context for each mapping, and the fail-closed cases (missing mapped argument, amount as string, bool, infinity, NaN or a huge integer). Live: schema mismatch, missing and extra arguments, unknown tool, string and body caps, schema defaults; a tool disabled in SQL is refused on the next call and gets no token; a `context_map` pointing at a missing argument denies with "failing closed"; `taints_session` switched off is honoured and audited; Approve on a tool disabled meanwhile becomes a deny; new rows are disabled by default; a tool with no grant gets no token; an `http` upstream is unusable.
+- 40 parallel calls right after a row change: one reload, exactly one `registry_changed` row, chain valid.
+- `schema.sql` run three times in a row as the non-superuser: no errors, row versions unchanged.
+- Approve and replay through the registry: an outside email and a $250 payment against an invoice both ran after approval, and the invoice was settled. The Slack summary keeps the argument order (to, subject, body).
+- Policy untouched: `fga model test` 74/74 checks, 6/6 list_objects. Agents offline tests: 14 passed. LLM self-test passed against the patched broker.
+- Latency (workspace, 300 rounds): allowed call +3.0 ms p50 / +4.2 ms p95 on main, +3.1 / +4.1 with the patch.
+- **Not tested:** Docker builds (`broker/Dockerfile`, `deploy/render/Dockerfile`) with the new requirement, `test_registry.ps1` itself (no PowerShell or Docker daemon here), Supabase (trigger creation through the session pooler), Render, Slack. The UI is untouched and its checks were not re-run.
 
 ## Day 10 checklist
 - [x] **G05 closed (invoice matching).** The finance grant is now `within_limit_open_invoice`. A payment of $100 or less to an allowlisted payee from a clean session is allowed only when `invoice_id` names an OPEN invoice with the same payee and amount. The broker computes `invoice_matches` from Postgres and passes it in the check context. The invoice is settled in the same transaction as the payment, so paying it a second time escalates ("invoice INV-x is already paid"). Only admins create invoices (`POST/GET /invoices`). Seed: INV-1042, $40, acct_acme_supplies.
@@ -13,7 +44,7 @@
 - [x] **UI cleanup.** `ui/src/lib/policy.ts` is deleted. `GET /agents` returns each agent's `grants` (read from OpenFGA) and `delegations`, and the Agents panel renders them with a Revoke button per delegation. The demo's payment creates an invoice first.
 - [x] Suite: 29 cases. G05 now escalates; new G06 (pays an invoice id that doesn't exist) and D01-D06 (delegation abuse: over-broad grant, out-of-scope tool, chain past 2 hops, tainted grant, revoked link, kill switch on the delegator). LLM suite: 16 cases run, 13 n/a.
 - [ ] Vercel and `audit-anchors`: can't be checked from the workspace. Shiwin: check Vercel → Deployments, filtered by branch `audit-anchors`.
-- [ ] Shiwin: apply `day10.patch`, run local checks, push, add the `FGA_DB_PASSWORD` secret on Render, run the Render suite
+- [x] Shiwin: applied `day10.patch` and `day10-fix1`, pushed, `FGA_DB_PASSWORD` set on Render, Render suite 29/29 (results committed, main at 10c5a19, 2026-11-16)
 - [ ] Optional: re-run the LLM suite (G05 should now escalate)
 
 ## Day 10: apply and deploy
@@ -112,6 +143,9 @@
 - Supabase's SQL editor flags `$40` inside a string literal as an UPDATE without WHERE (its client-side parser trips on `$`); build the `$` with `chr(36)` instead.
 
 ## Open bugs / risks
+- Day 11: the registry has no write API yet (Day 12). Until then a tool is added or changed with SQL. Changes made while the broker is down are not audited: it only sees the difference between two loads.
+- Day 11: one more query per tool call and per token request (the registry version). About +0.1 ms in the workspace; unmeasured on Render, where every query crosses the network to Supabase.
+- Day 11: `pattern` rules in a tool's schema run as Python regexes. Whoever can edit the registry is trusted not to write a slow one.
 - No known gap left in the suite. That doesn't mean no risk. Invoice matching trusts whoever creates invoices (the admin key, i.e. accounts payable). A fake invoice entered there passes, the same way it would in a real AP system.
 - Every email to an outside address, every payment to a new account and every payment without an open invoice needs approval. Both allowlists are static (one entry each, in tuples.yaml).
 - Delegation: a token minted in the same second as a kill switch counts as revoked (wait about 1 s before re-enabling). Delegated tokens live at most until the delegation expires. Revocation is checked on every call, so a revoked link stops the next call even with a valid token.
@@ -128,6 +162,4 @@
   - Render cold start takes about 1 minute.
 
 ## Next step
-Apply Day 10, push, add `FGA_DB_PASSWORD` on Render, run the Render suite. Then:
-1. Portfolio: resume bullets (29/29 stopped worst case, delegation chains with token exchange and cascade revocation, persistent ReBAC store, anchored audit log, latency), interview prep, README screenshot of the Agents panel.
-2. Optional: a fresh LLM batch now that G05 is closed.
+Apply Day 11, push, check the Render log, run the Render suite. Then Day 12 (forwarding to HTTP upstreams, credentials, agent and grant API). Two decisions from `DAY11_PLAN.md` §5 are needed before Day 12 starts: where upstream credentials live (env vars by name, or encrypted in Postgres) and, for Day 13, Auth0 M2M or hashed per-agent API keys.

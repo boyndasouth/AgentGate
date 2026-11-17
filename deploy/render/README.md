@@ -91,3 +91,9 @@ Supabase → Table Editor → `audit_events`, and `/audit/verify` says the chain
 | `prepared statement … already exists` | Used port 6543; switch to 5432 |
 | `too many clients` / `max client connections reached` | Old + new instance during deploy each hold a full asyncpg pool; lower the broker's pool `max_size` to 5 |
 | First request takes ~1 min | Free instance waking up; `check_deploy.ps1` warms it before demos |
+
+## Day 13: agent login (optional)
+
+`AUTH0_DOMAIN` and `AUTH0_AUDIENCE` let agents log in as themselves with an Auth0 machine-to-machine
+token (`POST /tokens/agent`). Setup: [`../auth0/README.md`](../auth0/README.md). Leave both unset
+and that one endpoint answers 503; the rest of the broker is unaffected.

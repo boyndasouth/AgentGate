@@ -1,7 +1,8 @@
 """Day 12: the admin API that replaces the seed files.
 
     POST   /agents                          register an agent (DB row + owner tuple)
-    PATCH  /agents/{id}                     display name, status (status uses the kill switch)
+    PATCH  /agents/{id}                     display name, status (status uses the kill switch),
+                                            auth0_client_id (Day 13: the agent's own login)
     GET    /agents/{id}/grants              its grants, read from OpenFGA
     POST   /agents/{id}/grants              {tool, mode?, params?}
     DELETE /agents/{id}/grants?tool=&mode=  remove API-made grants
@@ -28,7 +29,7 @@ from litestar import Request, Response, delete, get, patch, post
 from litestar.datastructures import State
 from litestar.di import Provide
 
-from . import audit, delegation, grants, registry
+from . import agent_login, audit, delegation, grants, registry
 from .deps import BadVia, _json, actor_of, admin_guard, provide_conn
 from .fga import PolicyEngineError
 from .grants import GrantError
@@ -46,12 +47,16 @@ class AgentCreate(msgspec.Struct, forbid_unknown_fields=True):
     id: str
     owner: str                          # 'user:shiwin' (or 'shiwin')
     display_name: str | None = None
+    auth0_client_id: str | None = None  # Day 13: the Auth0 M2M application this agent logs in with
 
 
 class AgentPatch(msgspec.Struct, forbid_unknown_fields=True):
     display_name: str | None = None
     status: str | None = None           # 'active' | 'disabled' (the kill switch)
     reason: str | None = None           # for the kill switch
+    # Day 13: set = the agent logs in as itself with this Auth0 M2M client (and the orchestrator
+    # key can no longer mint its tokens); null = back to orchestrator-minted tokens.
+    auth0_client_id: str | None | msgspec.UnsetType = msgspec.UNSET
 
 
 class GrantRequest(msgspec.Struct, forbid_unknown_fields=True):
@@ -88,6 +93,8 @@ class ApproverRequest(msgspec.Struct, forbid_unknown_fields=True):
 
 
 # ---------------------------------------------------------------- helpers
+
+_CLIENT_ID_RULE = "auth0_client_id must be the Auth0 application's Client ID (8 to 64 letters, digits, '-' or '_')"
 
 
 def _refuse(status: int, error: str, reason: str) -> Response:
@@ -149,39 +156,69 @@ async def register_agent(data: AgentCreate, request: Request, state: State, conn
         owner = grants.user_id(data.owner)
     except GrantError as exc:
         return _refuse(400, "invalid_agent", f"owner: {exc.reason}")
+    client_id = data.auth0_client_id
+    if client_id is not None and not agent_login.CLIENT_ID.fullmatch(client_id):
+        return _refuse(400, "invalid_agent", _CLIENT_ID_RULE)
     key = {"user": owner, "relation": "owner", "object": f"agent:{data.id}"}
     try:
         async with conn.transaction():
-            await conn.execute("INSERT INTO agents (id, owner, display_name, created_by) VALUES ($1, $2, $3, $4)",
-                               data.id, owner, name, actor)
+            await conn.execute(
+                "INSERT INTO agents (id, owner, display_name, created_by, auth0_client_id) VALUES ($1, $2, $3, $4, $5)",
+                data.id, owner, name, actor, client_id)
             if not await state.fga.read(key):
                 await state.fga.write(writes=[key])
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
+        if exc.constraint_name == "agents_auth0_client_idx":
+            return _refuse(409, "client_in_use", "that Auth0 client is already mapped to another agent")
         return _refuse(409, "agent_exists", f"agent '{data.id}' is already registered")
     except PolicyEngineError as exc:
         return _refuse(503, "policy_engine_unavailable", f"nothing was changed: {exc}")
-    ev = await audit.append_event(conn, event_type="agent_registered", decision="info", agent_id=data.id,
-                                  approver=actor, reason=f"owner {owner}; no grants yet")
+    ev = await audit.append_event(
+        conn, event_type="agent_registered", decision="info", agent_id=data.id, approver=actor,
+        reason=f"owner {owner}; no grants yet" + (f"; logs in as Auth0 client {client_id}" if client_id else ""))
     return _json(201, {"id": data.id, "owner": owner, "display_name": name, "status": "active",
+                       "auth0_client_id": client_id, "login": "auth0" if client_id else "orchestrator",
                        "grants": [], "audit_id": ev["id"]})
 
 
 @patch("/agents/{agent_id:str}", tags=["agents"], status_code=200, **_ADMIN)
 async def update_agent(agent_id: str, data: AgentPatch, request: Request, state: State,
                        conn: asyncpg.Connection) -> Response:
-    """Change an agent's display name and/or status. Setting status to 'disabled' is the kill
-    switch (tokens and delegations die); 'active' re-enables it."""
+    """Change an agent's display name, status and/or login. Setting status to 'disabled' is the
+    kill switch (tokens and delegations die); 'active' re-enables it. Setting `auth0_client_id`
+    makes the agent log in as itself; changing or clearing it revokes the tokens it holds."""
     actor, bad = _actor(request)
     if bad:
         return bad
-    row = await conn.fetchrow("SELECT id, owner, display_name, status FROM agents WHERE id = $1", agent_id)
+    row = await conn.fetchrow("SELECT id, owner, display_name, status, auth0_client_id FROM agents WHERE id = $1",
+                              agent_id)
     if row is None:
         return _refuse(404, "unknown_agent", f"unknown agent '{agent_id[:64]}'")
     if data.status is not None and data.status not in ("active", "disabled"):
         return _refuse(400, "invalid_agent", "status must be 'active' or 'disabled'")
     if data.display_name is not None and not _plain(data.display_name, 80):
         return _refuse(400, "invalid_agent", "display_name must be 1 to 80 printable characters")
+    new_client = data.auth0_client_id
+    if isinstance(new_client, str) and not agent_login.CLIENT_ID.fullmatch(new_client):
+        return _refuse(400, "invalid_agent", _CLIENT_ID_RULE)
     out: dict[str, Any] = dict(row)
+    if new_client is not msgspec.UNSET and new_client != row["auth0_client_id"]:
+        # Who may get this agent's tokens changes, so the tokens it holds now are revoked: they
+        # were minted under the old rule (by the orchestrator, or for the old Auth0 client).
+        try:
+            async with conn.transaction():
+                await conn.execute("UPDATE agents SET auth0_client_id = $2 WHERE id = $1", agent_id, new_client)
+                await conn.execute("INSERT INTO revocations (agent_id, reason) VALUES ($1, $2)", agent_id,
+                                   "agent login changed")
+        except asyncpg.UniqueViolationError:
+            return _refuse(409, "client_in_use", "that Auth0 client is already mapped to another agent")
+        was = row["auth0_client_id"]
+        what = (f"logs in as Auth0 client {new_client}" + (f" (was {was})" if was else " (was: orchestrator-minted tokens)")
+                if new_client else f"own login removed (was Auth0 client {was}); the orchestrator key mints its tokens again")
+        ev = await audit.append_event(conn, event_type="agent_login_changed", decision="info", agent_id=agent_id,
+                                      approver=actor, reason=f"{what}; live tokens revoked")
+        out.update(auth0_client_id=new_client, audit_id=ev["id"])
+    out["login"] = "auth0" if out["auth0_client_id"] else "orchestrator"
     if data.display_name is not None and data.display_name != row["display_name"]:
         await conn.execute("UPDATE agents SET display_name = $2 WHERE id = $1", agent_id, data.display_name)
         ev = await audit.append_event(conn, event_type="agent_updated", decision="info", agent_id=agent_id,

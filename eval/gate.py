@@ -126,6 +126,13 @@ class Gate:
             body["session_id"] = session_id
         return self.request("POST", "/tokens", body, {"X-Orchestrator-Key": self.cfg.orchestrator_key})
 
+    def login(self, bearer: str, scopes: list[str], task: str, session_id: str | None = None):
+        """Day 13: an agent asks for its own token with an identity-provider bearer token."""
+        body = {"task": task, "scopes": scopes}
+        if session_id:
+            body["session_id"] = session_id
+        return self.request("POST", "/tokens/agent", body, {"Authorization": f"Bearer {bearer}"})
+
     def tool(self, token: str, name: str, args: dict):
         return self.request("POST", f"/tools/{name}", {"args": args}, {"Authorization": f"Bearer {token}"})
 

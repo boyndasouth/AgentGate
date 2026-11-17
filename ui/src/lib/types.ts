@@ -70,6 +70,9 @@ export interface Agent {
 	display_name?: string;
 	status?: string;
 	created_at?: string;
+	/** Day 13: 'auth0' = the agent logs in as itself; 'orchestrator' = the orchestrator key mints its tokens. */
+	login?: 'auth0' | 'orchestrator';
+	auth0_client_id?: string | null;
 	/** Read live from OpenFGA by the broker; null if OpenFGA couldn't be read. */
 	grants?: Grant[] | null;
 	delegations?: Delegation[];

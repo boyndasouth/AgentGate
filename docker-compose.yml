@@ -93,12 +93,33 @@ services:
       # named here; everything else must be https on a public address.
       UPSTREAM_PRIVATE_HOSTS: ${UPSTREAM_PRIVATE_HOSTS:-mock-upstream}
       UPSTREAM_MOCK_TOKEN: ${UPSTREAM_MOCK_TOKEN:-local-mock-upstream-token}
+      # Day 13: agent login. Locally the identity provider is the mock issuer below (plain http,
+      # so its host must be named). To use your real Auth0 tenant locally, put AUTH0_ISSUER
+      # (https://<domain>/), AUTH0_JWKS_URL (https://<domain>/.well-known/jwks.json) and
+      # AUTH0_AUDIENCE in .env. On Render it is AUTH0_DOMAIN + AUTH0_AUDIENCE.
+      AUTH0_ISSUER: ${AUTH0_ISSUER:-http://mock-issuer:9191/}
+      AUTH0_JWKS_URL: ${AUTH0_JWKS_URL:-http://mock-issuer:9191/.well-known/jwks.json}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE:-https://agentgate.local/api}
+      AUTH0_INSECURE_HOSTS: ${AUTH0_INSECURE_HOSTS:-mock-issuer}
     ports:
       - "8000:8000"
     depends_on:
       - broker-postgres
       - openfga
       - mock-upstream
+      - mock-issuer
+    restart: unless-stopped
+
+  # Day 13: a stand-in for Auth0 (JWKS + client credentials grant) for local tests. Runs in the
+  # broker's image because it needs PyJWT and cryptography. Only the broker and the tests talk
+  # to it; it is not published to the host. Never deployed.
+  mock-issuer:
+    build: ./broker
+    command: ["python", "/srv/mock/server.py", "9191"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./deploy/mock-issuer/server.py:/srv/mock/server.py:ro
     restart: unless-stopped
 
   # Day 12: a fake upstream API (echo, CRM, email, payments) for local tests. Only the broker

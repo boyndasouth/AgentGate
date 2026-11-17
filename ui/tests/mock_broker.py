@@ -60,7 +60,8 @@ class H(BaseHTTPRequestHandler):
             if a["status"] == "denied": return self.send(403, {"status": "denied", "reason": f"denied by {a['approver']}"})
             return self.send(200, {"status": a["status"]})
         if not self.admin(): return self.send(401, {"detail": "admin key required"})
-        if p == "/agents": return self.send(200, [{**a, "grants": GRANTS.get(a["id"], []), "delegations": []} for a in agents.values()])
+        if p == "/agents": return self.send(200, [{**a, "auth0_client_id": a.get("auth0_client_id"), "login": "auth0" if a.get("auth0_client_id") else "orchestrator",
+                                                  "grants": GRANTS.get(a["id"], []), "delegations": []} for a in agents.values()])
         if p == "/tools": return self.send(200, list(tools.values()))
         if p == "/approvals": return self.send(200, [{k: v for k, v in a.items() if k != "args"} for a in approvals.values() if a["status"] == "pending"])
         if p == "/audit/events": return self.send(200, list(reversed(events))[:50])
@@ -75,10 +76,24 @@ class H(BaseHTTPRequestHandler):
         path, _, q = p.partition("?")
         parts = path.strip("/").split("/")
         if method == "POST" and path == "/agents":
-            if set(b) - {"id", "owner", "display_name"}: return self.send(400, {"reason": "Validation failed"})
+            if set(b) - {"id", "owner", "display_name", "auth0_client_id"}: return self.send(400, {"reason": "Validation failed"})
             if b["id"] in agents: return self.send(409, {"reason": f"agent '{b['id']}' is already registered"})
-            agents[b["id"]] = {"id": b["id"], "owner": b["owner"], "display_name": b.get("display_name", b["id"]), "status": "active"}
+            if b.get("auth0_client_id") and any(a.get("auth0_client_id") == b["auth0_client_id"] for a in agents.values()):
+                return self.send(409, {"reason": "that Auth0 client is already mapped to another agent"})
+            agents[b["id"]] = {"id": b["id"], "owner": b["owner"], "display_name": b.get("display_name", b["id"]), "status": "active",
+                               "auth0_client_id": b.get("auth0_client_id")}
             return self.send(201, {**agents[b["id"]], "grants": []})
+        if method == "PATCH" and len(parts) == 2 and parts[0] == "agents":      # Day 13: the agent's login
+            if set(b) - {"display_name", "status", "reason", "auth0_client_id"}: return self.send(400, {"reason": "Validation failed"})
+            a = agents.get(parts[1])
+            if not a: return self.send(404, {"reason": "unknown agent"})
+            if "auth0_client_id" in b:
+                c = b["auth0_client_id"]
+                if c and any(o.get("auth0_client_id") == c and o is not a for o in agents.values()):
+                    return self.send(409, {"reason": "that Auth0 client is already mapped to another agent"})
+                a["auth0_client_id"] = c
+                revoked_agents[parts[1]] = time.time()
+            return self.send(200, {**a, "login": "auth0" if a.get("auth0_client_id") else "orchestrator"})
         if method == "POST" and len(parts) == 3 and parts[0] == "agents" and parts[2] == "grants":
             if set(b) - {"tool", "mode", "params"}: return self.send(400, {"reason": "Validation failed"})
             t = tools.get(b["tool"])

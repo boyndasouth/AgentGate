@@ -124,6 +124,27 @@ r = await call('/src/routes/api/tools/[name]/approvers/+server.ts', 'POST', { pa
 check('add an approver → 201', r.status === 201);
 r = await call('/src/routes/api/tools/[name]/approvers/[user]/+server.ts', 'DELETE', { params: { name: 'send_email', user: 'user:alex' } });
 check('remove an approver → 200', r.status === 200);
+// Day 13: how an agent gets its tokens
+const CLIENT = 'mockClient0000000000000000000001';
+r = await call('/src/routes/api/agents/+server.ts', 'POST', { body: { id: 'm2m-bot', owner: 'user:shiwin', auth0_client_id: CLIENT } });
+check('register an agent with an Auth0 client id → 201', r.status === 201 && r.data.auth0_client_id === CLIENT, JSON.stringify(r.data));
+r = await call('/src/routes/api/agents/+server.ts', 'POST', { body: { id: 'm2m-bot2', owner: 'user:shiwin', auth0_client_id: 'bad id!' } });
+check('a malformed client id is refused by the UI server', r.status === 400);
+r = await call('/src/routes/api/agents/[id]/+server.ts', 'PATCH', { params: { id: 'support-bot' }, body: { auth0_client_id: CLIENT } });
+check('a client already mapped to another agent → 409 passed through', r.status === 409, JSON.stringify(r.data));
+r = await call('/src/routes/api/agents/[id]/+server.ts', 'PATCH', { params: { id: 'support-bot' }, body: { auth0_client_id: 'mockClient0000000000000000000002' } });
+check('set an agent\'s login → 200, with X-Admin-Via', r.status === 200 && r.data.login === 'auth0' && (await vias()).at(-1) === 'admin-ui:auth0|admin1', JSON.stringify(r.data));
+const ag3 = await broker('/agents');
+check('agents list says who logs in how', ag3.data?.find((a) => a.id === 'support-bot')?.login === 'auth0' && ag3.data?.find((a) => a.id === 'finance')?.login === 'orchestrator');
+r = await call('/src/routes/api/agents/[id]/+server.ts', 'PATCH', { params: { id: 'support-bot' }, body: { auth0_client_id: null } });
+check('remove the login → 200', r.status === 200 && r.data.login === 'orchestrator', JSON.stringify(r.data));
+r = await call('/src/routes/api/agents/[id]/+server.ts', 'PATCH', { params: { id: 'support-bot' }, body: { status: 'disabled' } });
+check('the login route forwards nothing else (status refused)', r.status === 400);
+r = await call('/src/routes/api/agents/[id]/+server.ts', 'PATCH', { params: { id: 'support-bot' }, body: {} });
+check('  ... and needs the field', r.status === 400);
+r = await call('/src/routes/api/agents/[id]/+server.ts', 'PATCH', { params: { id: 'Bad/Id' }, body: { auth0_client_id: null } });
+check('  ... and a well-formed agent id', r.status === 400);
+
 r = await call('/src/routes/api/tools/+server.ts', 'GET');
 check('tools list', r.status === 200 && r.data.some((t) => t.name === 'crm.update_ticket'));
 

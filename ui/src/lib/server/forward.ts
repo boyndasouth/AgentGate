@@ -8,6 +8,7 @@ import { broker, detail } from './broker';
 
 export const AGENT_ID = /^[a-z][a-z0-9_-]{1,63}$/;
 export const TOOL_NAME = /^[a-z][a-z0-9_.]{1,63}$/;
+export const AUTH0_CLIENT_ID = /^[A-Za-z0-9_-]{8,64}$/;   // Day 13
 export const USER = /^(user:)?[a-z0-9][a-z0-9_.-]{0,63}$/;
 export const TOOL_FIELDS = ['name', 'description', 'args_schema', 'risk_class', 'context_map', 'taints_session',
 	'upstream', 'credential_ref', 'enabled'];

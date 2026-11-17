@@ -259,6 +259,19 @@ CREATE TABLE IF NOT EXISTS tool_approvers (
     PRIMARY KEY (tool, user_id)
 );
 
+-- Day 13: agents log in as themselves. An agent mapped to an Auth0 machine-to-machine client
+-- gets its tokens at POST /tokens/agent with that client's Auth0 access token; the orchestrator
+-- key can no longer mint tokens for it. One client maps to at most one agent.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS auth0_client_id text;
+CREATE UNIQUE INDEX IF NOT EXISTS agents_auth0_client_idx ON agents (auth0_client_id)
+    WHERE auth0_client_id IS NOT NULL;
+-- A session started by an agent's own login belongs to that agent's owner; only agents of the
+-- same owner may join it. Orchestrator sessions keep owner NULL and can't be joined that way.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS owner      text;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS created_by text;   -- agent id
+ALTER TABLE tokens   ADD COLUMN IF NOT EXISTS login      text;   -- 'auth0' when the agent logged in itself
+CREATE INDEX IF NOT EXISTS tokens_agent_expiry_idx ON tokens (agent_id, expires_at);
+
 -- Supabase exposes `public` through its REST API; the broker connects as postgres and bypasses RLS.
 -- (The six Day 3 tables are covered by deploy/supabase_rls.sql; new tables enable it here.)
 ALTER TABLE invoices    ENABLE ROW LEVEL SECURITY;

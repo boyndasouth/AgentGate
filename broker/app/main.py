@@ -22,8 +22,9 @@ from litestar.exceptions import NotFoundException
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 
-from . import admin_api, audit, delegation, grants, invoices, registry, taint, upstream
+from . import admin_api, agent_login, audit, delegation, grants, invoices, registry, taint, upstream
 from .deps import VIA, _json, admin_guard, orchestrator_guard, provide_conn
+from .agent_login import Forged, Rejected, Unavailable
 from .approvals import ApprovalError, ApprovalService, Approver, admin_view, agent_view
 from .config import load_settings
 from .db import create_pool
@@ -68,6 +69,12 @@ async def lifespan(app: Litestar) -> AsyncGenerator[None, None]:
     except PolicyEngineError as exc:
         log.warning("api grants not reconciled (OpenFGA unreachable): %s", exc)
 
+    # Day 13: agents log in as themselves with an Auth0 machine-to-machine token. Off unless configured.
+    login_config = agent_login.load_config()
+    app.state.agent_login = agent_login.AgentLogin(login_config) if login_config else None
+    log.info("agent login: %s", f"auth0, issuer {login_config.issuer}, audience {login_config.audience}"
+             if login_config else "off (set AUTH0_DOMAIN and AUTH0_AUDIENCE to let agents log in as themselves)")
+
     approvals = ApprovalService(app.state.pool, app.state.fga, ttl_seconds=settings.approval_ttl_seconds)
     app.state.approvals = approvals
     app.state.slack = None
@@ -84,6 +91,8 @@ async def lifespan(app: Litestar) -> AsyncGenerator[None, None]:
         if app.state.slack is not None:
             await app.state.slack.stop()
         await upstream.close()
+        if app.state.agent_login is not None:
+            await app.state.agent_login.close()
         await app.state.fga.close()
         await app.state.pool.close()
 
@@ -96,6 +105,14 @@ class TokenRequest(msgspec.Struct, forbid_unknown_fields=True):
     task: str
     scopes: list[str]
     session_id: str | None = None   # omit to start a new session (a new orchestrator run)
+
+
+class AgentLoginRequest(msgspec.Struct, forbid_unknown_fields=True):
+    """Day 13: the agent asks for its own token. Who it is comes from the Auth0 bearer token,
+    never from the body."""
+    task: str
+    scopes: list[str]
+    session_id: str | None = None   # omit to start a new session; or one this agent may join
 
 
 class TokenResponse(msgspec.Struct):
@@ -113,6 +130,7 @@ class TokenResponse(msgspec.Struct):
     principal: str | None = None      # Day 10, exchanged tokens: whose access this token uses
     actors: list[str] | None = None   # Day 10: calling agent first, then earlier hops
     delegation_ids: list[str] | None = None
+    login: str | None = None          # Day 13: 'auth0' when the agent logged in as itself
 
 
 class DelegationRequest(msgspec.Struct, forbid_unknown_fields=True):
@@ -171,7 +189,8 @@ class ToolResult(msgspec.Struct, omit_defaults=True):
 
 @get("/health", tags=["meta"])
 async def health(state: State) -> dict:
-    return {"status": "ok", "openfga": await state.fga.ping(), "slack": state.settings.slack_mode}
+    return {"status": "ok", "openfga": await state.fga.ping(), "slack": state.settings.slack_mode,
+            "agent_login": "auth0" if state.agent_login is not None else "off"}
 
 
 @get("/.well-known/jwks.json", tags=["tokens"])
@@ -225,77 +244,149 @@ async def audit_events(conn: asyncpg.Connection, session_id: str | None = None, 
 # ---------------------------------------------------------------- tokens
 
 
-@post("/tokens", tags=["tokens"], guards=[orchestrator_guard], status_code=201,
-      dependencies={"conn": Provide(provide_conn)}, security=[{"OrchestratorKey": []}])
-async def create_token(data: TokenRequest, state: State, conn: asyncpg.Connection) -> Response[TokenResponse]:
-    """Mint a 10-minute, task-scoped token for one agent."""
+async def _mint(state: State, conn: asyncpg.Connection, *, agent_id: str, task: str, scopes: list[str],
+                session_id: str | None, login: str | None) -> Response:
+    """Shared by POST /tokens (the orchestrator names the agent) and POST /tokens/agent (Day 13:
+    the agent proved who it is, `login` = 'auth0'). Same scope and registry checks for both."""
     settings, fga = state.settings, state.fga
-    scopes = sorted(set(data.scopes))
+    scopes = sorted(set(scopes))
 
     async def refuse(status: int, reason: str) -> Response:
         # Day 5: if the request names an existing session, the denial carries its taint too.
-        st = await taint.load(conn, data.session_id) if data.session_id else None
+        st = await taint.load(conn, session_id) if session_id else None
         ev = await audit.append_event(conn, event_type="token_denied", decision="deny", reason=reason,
-                                      agent_id=data.agent_id, session_id=data.session_id,
+                                      agent_id=agent_id, session_id=session_id,
                                       session_tainted=st.tainted if st else None)
         return _json(status, {"error": "token_denied", "reason": reason, "audit_id": ev["id"]})
 
-    agent = await conn.fetchrow("SELECT id, status FROM agents WHERE id = $1", data.agent_id)
+    agent = await conn.fetchrow("SELECT id, status, owner, auth0_client_id FROM agents WHERE id = $1", agent_id)
     if agent is None:
-        return await refuse(404, f"unknown agent '{data.agent_id}'")
+        return await refuse(404, f"unknown agent '{agent_id}'")
     if agent["status"] != "active":
-        return await refuse(403, f"agent '{data.agent_id}' is disabled (kill switch)")
+        return await refuse(403, f"agent '{agent_id}' is disabled (kill switch)")
+    if login is None and agent["auth0_client_id"]:
+        # Day 13: once an agent has its own login, nobody else can speak for it.
+        return await refuse(403, f"agent '{agent_id}' logs in as itself (POST /tokens/agent); "
+                                 "the orchestrator key can't mint its tokens")
     if not scopes:
         return await refuse(400, "request at least one scope")
+    if len(scopes) > 64 or len(task) > 2000:
+        return await refuse(400, "too many scopes or a task description over 2000 characters")
     await REGISTRY.sync(conn)
     unknown = [s for s in scopes if REGISTRY.peek(s) is None]
     if unknown:
-        return await refuse(400, f"unknown tool scope(s): {', '.join(unknown)}")
+        return await refuse(400, f"unknown tool scope(s): {', '.join(u[:64] for u in unknown[:10])}")
     unusable = [s for s in scopes if not REGISTRY.peek(s).usable]
     if unusable:     # Day 11: no token for a tool that is switched off or misconfigured
         return await refuse(400, f"disabled or misconfigured tool scope(s): {', '.join(unusable)}")
 
     try:
-        not_granted = [s for s in scopes if not await may_hold_scope(fga, data.agent_id, s)]
+        not_granted = [s for s in scopes if not await may_hold_scope(fga, agent_id, s)]
     except PolicyEngineError as exc:
         return await refuse(503, f"policy engine unavailable, failing closed: {exc}")
     if not_granted:
-        return await refuse(403, f"agent '{data.agent_id}' may not hold: {', '.join(not_granted)}")
+        return await refuse(403, f"agent '{agent_id}' may not hold: {', '.join(not_granted)}")
 
-    # Session: reuse the orchestrator run's session (taint and all), or start a new, clean one.
-    if data.session_id:
+    # Session: reuse a session (taint and all), or start a new one.
+    carried = None
+    if login is not None:
+        # Day 13: taint follows the agent. With the orchestrator, a trusted party decides when a
+        # run (and its session) ends. An agent that logs in itself could otherwise read a
+        # poisoned page and simply ask for a fresh, clean session.
+        carried = await conn.fetchrow(
+            """SELECT s.id, s.tainted_by FROM tokens t JOIN sessions s ON s.id = t.session_id
+               WHERE t.agent_id = $1 AND t.expires_at > now() AND s.tainted
+               ORDER BY s.tainted_at DESC NULLS LAST LIMIT 1""", agent_id)
+    if session_id:
         try:
-            sid = uuid.UUID(data.session_id)
+            sid = uuid.UUID(session_id)
         except ValueError:
             return await refuse(400, "session_id is not a UUID")
-        st = await taint.load(conn, str(sid))
-        if st is None:
+        row = await conn.fetchrow("SELECT owner FROM sessions WHERE id = $1", sid)
+        if login is not None and (row is None or row["owner"] is None or row["owner"] != agent["owner"]):
+            # Same answer for "doesn't exist" and "not yours", so session ids can't be probed.
+            return await refuse(403, "unknown session, or not one this agent may join "
+                                     "(an agent can only join a session started by an agent of the same owner)")
+        if row is None:
             return await refuse(404, "unknown session_id")
     else:
         sid = uuid.uuid4()
-        await conn.execute("INSERT INTO sessions (id) VALUES ($1)", sid)
-        st = taint.SessionTaint(False)
+        await conn.execute("INSERT INTO sessions (id, owner, created_by) VALUES ($1, $2, $3)", sid,
+                           agent["owner"] if login is not None else None, agent_id if login is not None else None)
+    if carried is not None and carried["id"] != sid:
+        source = carried["tainted_by"] or "an earlier session"
+        await taint.mark(conn, session_id=str(sid), tool=source, agent_id=agent_id,
+                         via=f" (carried over: the agent still holds a token in tainted session {str(carried['id'])[:8]})")
+    st = await taint.load(conn, str(sid))
 
     task_id = str(uuid.uuid4())
-    token, claims = issue_token(state.key, settings, agent_id=data.agent_id, session_id=str(sid),
+    token, claims = issue_token(state.key, settings, agent_id=agent_id, session_id=str(sid),
                                 task_id=task_id, scopes=scopes)
     await conn.execute(
-        """INSERT INTO tokens (jti, agent_id, session_id, task_id, task, scopes, issued_at, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7), to_timestamp($8))""",
-        uuid.UUID(claims["jti"]), data.agent_id, sid, uuid.UUID(task_id), data.task, scopes,
-        claims["iat"], claims["exp"],
+        """INSERT INTO tokens (jti, agent_id, session_id, task_id, task, scopes, issued_at, expires_at, login)
+           VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7), to_timestamp($8), $9)""",
+        uuid.UUID(claims["jti"]), agent_id, sid, uuid.UUID(task_id), task, scopes,
+        claims["iat"], claims["exp"], login,
     )
     await audit.append_event(conn, event_type="token_issued", decision="info",
-                             reason=f"scopes: {' '.join(scopes)}; task: {data.task[:120]}",
-                             agent_id=data.agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"],
+                             reason=f"scopes: {' '.join(scopes)}; task: {task[:120]}"
+                                    + (f"; login: {login}" if login else ""),
+                             agent_id=agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"],
                              session_tainted=st.tainted)
     body = TokenResponse(
         access_token=token, token_type="Bearer", expires_in=settings.token_ttl_seconds,
         expires_at=datetime.fromtimestamp(claims["exp"], tz=timezone.utc).isoformat(),
-        agent_id=data.agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"], scopes=scopes,
-        session_tainted=st.tainted, tainted_by=st.tainted_by,
+        agent_id=agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"], scopes=scopes,
+        session_tainted=st.tainted, tainted_by=st.tainted_by, login=login,
     )
     return _json(201, body)
+
+
+@post("/tokens", tags=["tokens"], guards=[orchestrator_guard], status_code=201,
+      dependencies={"conn": Provide(provide_conn)}, security=[{"OrchestratorKey": []}])
+async def create_token(data: TokenRequest, state: State, conn: asyncpg.Connection) -> Response[TokenResponse]:
+    """Mint a 10-minute, task-scoped token for one agent. Refused for an agent that has its own
+    login (Day 13)."""
+    return await _mint(state, conn, agent_id=data.agent_id, task=data.task, scopes=data.scopes,
+                       session_id=data.session_id, login=None)
+
+
+@post("/tokens/agent", tags=["tokens"], status_code=201, dependencies={"conn": Provide(provide_conn)},
+      security=[{"Auth0M2M": []}])
+async def agent_token(data: AgentLoginRequest, request: Request, state: State,
+                      conn: asyncpg.Connection) -> Response[TokenResponse]:
+    """Day 13: an agent logs in as itself. `Authorization: Bearer <Auth0 access token>` from the
+    client credentials grant (audience = this API). The broker checks it against Auth0's keys,
+    finds the agent mapped to that Auth0 client and mints the usual short-lived AgentGate token.
+    Cache the Auth0 token until it expires: this endpoint can be called with it again and again."""
+    service = state.agent_login
+    if service is None:
+        return _json(503, {"error": "agent_login_not_configured",
+                           "reason": "this broker has no identity provider configured for agent login"})
+    try:
+        login = await service.verify(agent_login.bearer_of(request.headers.get("authorization")))
+    except Forged as exc:
+        # Not provably from the issuer: refused and logged, but kept out of the audit chain
+        # (like a bad signature on an agent token), so junk can't flood it.
+        log.warning("agent login refused: %s", exc.reason)
+        return _json(401, {"error": "login_refused", "reason": exc.reason})
+    except Unavailable as exc:
+        return _json(503, {"error": "identity_provider_unavailable", "reason": exc.reason})
+    except Rejected as exc:
+        agent_id = (await conn.fetchval("SELECT id FROM agents WHERE auth0_client_id = $1", exc.client_id)
+                    if exc.client_id else None)
+        ev = await audit.append_event(
+            conn, event_type="token_denied", decision="deny", agent_id=agent_id,
+            reason=f"agent login: {exc.reason}" + (f" (Auth0 client {exc.client_id})" if exc.client_id else ""))
+        return _json(401, {"error": "login_refused", "reason": exc.reason, "audit_id": ev["id"]})
+
+    agent_id = await conn.fetchval("SELECT id FROM agents WHERE auth0_client_id = $1", login.client_id)
+    if agent_id is None:
+        reason = f"Auth0 client {login.client_id} is not mapped to an agent"
+        ev = await audit.append_event(conn, event_type="token_denied", decision="deny", reason=f"agent login: {reason}")
+        return _json(403, {"error": "login_refused", "reason": reason, "audit_id": ev["id"]})
+    return await _mint(state, conn, agent_id=agent_id, task=data.task, scopes=data.scopes,
+                       session_id=data.session_id, login="auth0")
 
 
 @post("/tokens/revoke", tags=["tokens"], guards=[admin_guard], status_code=200,
@@ -450,7 +541,7 @@ async def list_invoices(conn: asyncpg.Connection, limit: int = 50) -> list[dict]
 async def list_agents(state: State, conn: asyncpg.Connection) -> list[dict]:
     """Agents with their grants, read live from OpenFGA (Day 10: the UI no longer keeps a copy),
     and the delegations they take part in. `grants` is null if OpenFGA can't be read."""
-    rows = await conn.fetch("SELECT id, owner, display_name, status, created_by FROM agents ORDER BY id")
+    rows = await conn.fetch("SELECT id, owner, display_name, status, created_by, auth0_client_id FROM agents ORDER BY id")
     try:
         tuples = await state.fga.read()
     except PolicyEngineError:
@@ -462,6 +553,7 @@ async def list_agents(state: State, conn: asyncpg.Connection) -> list[dict]:
     out = []
     for r in rows:
         a = dict(r)
+        a["login"] = "auth0" if r["auth0_client_id"] else "orchestrator"   # Day 13: who can get its tokens
         a["grants"] = None if tuples is None else by_agent.get(r["id"], [])
         a["delegations"] = [{**d, "role": "granted" if d["delegator"] == r["id"] else "received"}
                             for d in active if r["id"] in (d["delegator"], d["delegate"])]
@@ -773,17 +865,19 @@ async def slack_events(scope: dict, receive: Any, send: Any) -> None:
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.9.0",
+    version="0.10.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),
         "AdminKey": SecurityScheme(type="apiKey", name="X-Admin-Key", security_scheme_in="header"),
         "OrchestratorKey": SecurityScheme(type="apiKey", name="X-Orchestrator-Key", security_scheme_in="header"),
+        "Auth0M2M": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT",
+                                   description="Auth0 access token from the client credentials grant"),
     }),
 )
 
 app = Litestar(
-    route_handlers=[health, jwks, audit_verify, audit_checkpoint, audit_hashes, audit_events, create_token, revoke_token,
+    route_handlers=[health, jwks, audit_verify, audit_checkpoint, audit_hashes, audit_events, create_token, agent_token, revoke_token,
                     create_delegation, exchange_token, list_delegations, revoke_delegation, create_invoice,
                     list_invoices, list_agents,
                     disable_agent, enable_agent, list_tools, call_tool,

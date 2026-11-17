@@ -16,7 +16,11 @@
 
 	// Day 12: register an agent
 	let showRegister = $state(false);
-	let reg = $state({ id: '', owner: 'user:shiwin', display_name: '' });
+	let reg = $state({ id: '', owner: 'user:shiwin', display_name: '', auth0_client_id: '' });
+
+	// Day 13: how an agent gets its tokens (one open form at a time)
+	let loginFor = $state<string | null>(null);
+	let loginClient = $state('');
 
 	// Day 12: add a grant (one open form at a time)
 	let grantFor = $state<string | null>(null);
@@ -59,15 +63,42 @@
 		actionError = notice = null;
 		const body: Record<string, string> = { id: reg.id.trim(), owner: reg.owner.trim() };
 		if (reg.display_name.trim()) body.display_name = reg.display_name.trim();
+		if (reg.auth0_client_id.trim()) body.auth0_client_id = reg.auth0_client_id.trim();
 		const r = await api('/api/agents', { method: 'POST', body });
 		busy = null;
 		if (!r.ok) {
 			actionError = `register: ${r.error}`;
 			return;
 		}
-		notice = `Registered ${body.id}. It has no grants yet, so every call it makes is denied.`;
-		reg = { id: '', owner: reg.owner, display_name: '' };
+		notice = `Registered ${body.id}. It has no grants yet, so every call it makes is denied.` +
+			(body.auth0_client_id ? ' It logs in as itself with its Auth0 client.' : '');
+		reg = { id: '', owner: reg.owner, display_name: '', auth0_client_id: '' };
 		showRegister = false;
+		onchange();
+	}
+
+	// Day 13: map the agent to an Auth0 M2M client, or go back to orchestrator-minted tokens.
+	function openLogin(agent: Agent) {
+		loginFor = loginFor === agent.id ? null : agent.id;
+		loginClient = agent.auth0_client_id ?? '';
+	}
+
+	async function setLogin(e: SubmitEvent | null, agent: Agent, client: string | null) {
+		e?.preventDefault();
+		const what = client
+			? `Let ${agent.id} log in as itself with Auth0 client ${client}? The orchestrator key will no longer be able to mint its tokens.`
+			: `Remove ${agent.id}'s own login? The orchestrator key will mint its tokens again.`;
+		if (!confirm(`${what}\n\nEvery token it holds now is revoked.`)) return;
+		busy = `login:${agent.id}`;
+		actionError = notice = null;
+		const r = await api(`/api/agents/${agent.id}`, { method: 'PATCH', body: { auth0_client_id: client } });
+		busy = null;
+		if (!r.ok) {
+			actionError = `login: ${r.error}`;
+			return;
+		}
+		notice = client ? `${agent.id} now logs in as itself (Auth0 client ${client}).` : `${agent.id}: own login removed.`;
+		loginFor = null;
 		onchange();
 	}
 
@@ -140,6 +171,10 @@
 			<label>id <input required bind:value={reg.id} placeholder="support-bot" maxlength="64" /></label>
 			<label>display name <input bind:value={reg.display_name} placeholder="Support bot" maxlength="80" /></label>
 			<label>owner <input required bind:value={reg.owner} placeholder="user:shiwin" /></label>
+			<label>
+				Auth0 client ID (optional)
+				<input bind:value={reg.auth0_client_id} placeholder="Client ID of its M2M application" minlength="8" maxlength="64" />
+			</label>
 			<p class="muted small">A new agent has no grants: every call it makes is denied until you add one.</p>
 			<button class="btn primary" disabled={busy === 'register'}>{busy === 'register' ? '…' : 'Register'}</button>
 		</form>
@@ -153,6 +188,13 @@
 					<div>
 						<div class="agent-name">{agent.display_name ?? agent.id}</div>
 						<div class="muted small">agent:{agent.id} · owner {agent.owner ?? '—'}</div>
+						<div class="muted small">
+							{#if agent.auth0_client_id}
+								logs in as itself · Auth0 client <code title={agent.auth0_client_id}>{agent.auth0_client_id.slice(0, 8)}…</code>
+							{:else}
+								tokens minted by the orchestrator
+							{/if}
+						</div>
 					</div>
 					<span class="pill {disabled ? 'deny' : 'allow'}">{disabled ? 'disabled' : 'active'}</span>
 				</div>
@@ -236,8 +278,31 @@
 					</form>
 				{/if}
 
+				{#if loginFor === agent.id}
+					<form class="form" onsubmit={(e) => setLogin(e, agent, loginClient.trim())}>
+						<label>
+							Auth0 client ID
+							<input required bind:value={loginClient} placeholder="Client ID of its M2M application" minlength="8" maxlength="64" />
+						</label>
+						<p class="muted small">
+							The agent gets its tokens at POST /tokens/agent with an Auth0 access token for this client. The
+							orchestrator key can then no longer mint tokens for it. Changing this revokes the tokens it holds now.
+						</p>
+						<div class="row">
+							<button class="btn primary" disabled={busy === `login:${agent.id}` || loginClient.trim() === (agent.auth0_client_id ?? '')}>
+								{busy === `login:${agent.id}` ? '…' : 'Save login'}
+							</button>
+							{#if agent.auth0_client_id}
+								<button type="button" class="btn danger" disabled={busy === `login:${agent.id}`} onclick={() => setLogin(null, agent, null)}>Remove login</button>
+							{/if}
+							<button type="button" class="btn ghost" onclick={() => (loginFor = null)}>Cancel</button>
+						</div>
+					</form>
+				{/if}
+
 				<div class="row">
 					<button class="btn tiny" onclick={() => openGrant(agent.id)} disabled={disabled}>{grantFor === agent.id ? 'Close' : '+ Grant'}</button>
+					<button class="btn tiny" onclick={() => openLogin(agent)}>{loginFor === agent.id ? 'Close' : 'Login'}</button>
 					<button
 						class="btn {disabled ? '' : 'danger'} grow"
 						disabled={busy === agent.id}

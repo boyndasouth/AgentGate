@@ -1,10 +1,51 @@
 # PROGRESS
 
-**Current day:** Day 12: forwarding to HTTP upstreams, credentials, agent and grant API (2026-11-16). `day12.patch` (against main at 4d0dd58) applied and pushed; the Render redeploy check passed. `day12-followup.patch` delivered. Day 11 is done and deployed. Second day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
-**Build status:** Days 0-12 are done and deployed. Day 12 makes agents, grants, approvers and tools API data (no seed file needed), and adds `http` upstreams: an allowed call goes to a real API with a credential only the broker holds.
-**Headline numbers after Day 12 (workspace):** **33/33 attacks stopped** (14 blocked, 19 escalated, 0 allowed): the 29 from Day 11 unchanged plus R01-R04. Day 12 tests 190/190, registry tests 118/118. Allowed-call latency unchanged (main and the patch measured back to back in the workspace: +3.9 / +5.2 ms and +3.9 / +5.4 ms). Shiwin's machine after Day 11: +5.5 ms p50 / +6.8 ms p95. LLM numbers are from Day 9.
+**Current day:** Day 13: agents log in as themselves with Auth0 machine-to-machine tokens (2026-11-16). `day13.patch` (against main at ba5f164) delivered, not yet applied. Day 12 and its follow-up are applied, pushed and deployed. Third day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
+**Build status:** Days 0-12 are done and deployed; Day 13 is built and tested in the workspace. Day 13 adds `POST /tokens/agent`: an agent that is an Auth0 M2M application trades its Auth0 access token for the usual AgentGate token, and the orchestrator key can no longer mint tokens for it.
+**Headline numbers after Day 13 (workspace):** **36/36 attacks stopped** (17 blocked, 19 escalated, 0 allowed): the 33 from Day 12 unchanged plus L01-L03. Day 13 tests 186/186, Day 12 tests 191/191, registry tests 118/118. Allowed-call latency unchanged (main and the patch measured back to back in the workspace, two runs each: +4.2 / +6.5 and +4.2 / +5.6 ms on main, +4.1 / +6.1 and +4.3 / +6.5 ms with the patch). Shiwin's machine after Day 11: +5.5 ms p50 / +6.8 ms p95. LLM numbers are from Day 9.
 
-**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 11 at 4d0dd58) · **Broker:** https://agentgate-broker.onrender.com (Day 12 patch is OpenAPI v0.9.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 12 follow-up at ba5f164) · **Broker:** https://agentgate-broker.onrender.com (Day 13 patch is OpenAPI v0.10.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled; Day 13 adds an API ("AgentGate API") and one M2M application per self-login agent (to be created, see `deploy/auth0/README.md`)
+
+## Day 13 checklist
+- [x] **Decision (Shiwin, before the build):** Auth0 M2M, not hashed per-agent API keys. Auth0's Free plan includes about 1,000 M2M tokens a month; enough when agents cache the Auth0 token (24 h by default).
+- [x] **`POST /tokens/agent`** (`broker/app/agent_login.py`, `main.py`): `Authorization: Bearer <Auth0 access token>`, body `{task, scopes, session_id?}`. RS256 only, key from the issuer's JWKS, then issuer, audience, expiry, age, and the client-credentials shape (`gty`, `sub` = `<client_id>@clients`, `azp`). Then the usual token: same scope, registry and kill-switch checks as `POST /tokens`.
+- [x] **Client mapping:** `agents.auth0_client_id` (unique). `POST /agents` and `PATCH /agents/{id}` take it; `GET /agents` returns it with `login: auth0 | orchestrator`. Changing or clearing it revokes the agent's live tokens and writes `agent_login_changed`.
+- [x] **The orchestrator key is refused for an agent with its own login** (403, audited). The three demo agents have none and work as before.
+- [x] **JWKS cache:** fetched over https, kept for an hour, an unknown key id triggers at most one refetch a minute, fail closed (503) when the keys can't be refreshed. No redirects, size cap, no proxy from the environment.
+- [x] **Sessions:** a login starts a session owned by the agent's owner, or joins one started by an agent of the same owner. Unknown and foreign session ids get the same 403. Orchestrator sessions can't be joined this way.
+- [x] **Taint follows the agent:** while a self-login agent holds a live token in a tainted session, every session it starts or joins is tainted (`session_tainted` event, "carried over").
+- [x] **Refusals:** not provably from the issuer (alg swap, unknown key, bad signature) → 401, logged, not audited. Signed but unusable (another audience, expired, too old, a user's token) → 401, audited. Unmapped client → 403, audited. Not configured → 503.
+- [x] **Settings:** `AUTH0_DOMAIN` + `AUTH0_AUDIENCE` (Render). Unset = agent login off, everything else unchanged. A half-configured setup stops the boot. `GET /health` reports `agent_login`.
+- [x] **`mock-issuer`** in compose (`deploy/mock-issuer/server.py`): JWKS, client credentials grant, and a test hook that signs any claims. Local tests never use Auth0's quota.
+- [x] **`examples/agent_login.py`:** a standard-library agent with only a client id and secret; caches its Auth0 token in `.agentgate-token-cache.json` (git-ignored).
+- [x] **UI:** optional Auth0 client ID when registering an agent, a Login form per agent (set, change, remove), and each card says how the agent gets its tokens. New server route `PATCH /api/agents/{id}`.
+- [x] Tests: `broker/tests/test_day13.py` (186 checks) + `scripts/test_day13.ps1`; suite L01-L03; UI smoke 55 checks.
+- [ ] Shiwin: apply `day13.patch`, run the local checks, push
+- [ ] Shiwin: Auth0 API + one M2M application; `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` on Render
+- [ ] Render: suite 36/36, then the real done check with `examples/agent_login.py`; commit `eval/results/*.json`
+
+## Day 13: apply and deploy
+1. `git pull`, then `git apply --check day13.patch` and `git apply day13.patch`.
+2. `docker compose up -d --build broker mock-upstream mock-issuer` (new compose service, built from the broker's image; no new Python requirement). In `docker compose logs broker`, look for `agent login: auth0, issuer http://mock-issuer:9191/, audience https://agentgate.local/api`. No policy change, so no `load_store.py` run.
+3. `.\scripts\run_eval.ps1 suite` (expect 36/36: 17 blocked, 19 escalated), `.\scripts\test_day13.ps1` (expect 186/186), `.\scripts\test_day12.ps1` (190/190), `.\scripts\test_registry.ps1` (118/118), `.\scripts\demo_day2.ps1`.
+4. UI: `cd ui; npm run check; npm run build`; optional `python tests/mock_broker.py 8765` + `node tests/smoke.mjs` (55 checks). Then open the local UI: Agents → `+ Register agent` has an Auth0 client ID field, and each agent has a `Login` button.
+5. Commit and push. Render rebuilds the broker; the new columns are added at boot (nothing to run in the SQL editor). The deploy log says `agent login: off (...)` until step 7. Vercel rebuilds the UI. Until Render is live, the new UI's Login form gets a 400 from the old broker.
+6. Auth0 (`deploy/auth0/README.md`, steps 1 and 3): create the API "AgentGate API" (identifier e.g. `https://agentgate-broker.onrender.com`, profile Auth0, RS256), then a Machine to Machine application authorized for it. Note its Client ID and Client Secret.
+7. Render → Environment: add `AUTH0_DOMAIN` (the tenant domain) and `AUTH0_AUDIENCE` (the API identifier, character for character). Saving redeploys. The log then says `agent login: auth0, issuer https://<domain>/, audience ...`.
+8. `.\scripts\run_eval.ps1 suite -Target render` (36/36). It registers `suite-m2m`, which stays (no grants, a made-up client id nobody can log in with).
+9. The real done check: admin UI → Agents → `+ Register agent` (e.g. `ext-bot`, with the Client ID) → `+ Grant` `query_customers`. Put the five settings in `.env.agent` (see the Auth0 README), then `docker run --rm -v "${PWD}:/w" -w /w python:3.12-slim python examples/agent_login.py --env-file .env.agent --tool query_customers`. Expect `logged in as agent 'ext-bot'` and `query_customers -> allow`. Run it again: `using the cached token`. Flip the kill switch in the UI and run it once more: `login refused (HTTP 403)`.
+10. Commit `eval/results/*.json`.
+
+## Day 13: tested before delivery (workspace: Postgres 16 as a non-superuser with CREATEROLE, OpenFGA v1.22.1 in memory, mock upstream, mock issuer, broker at the patch on a fresh clone)
+- Suite 36/36 (17 blocked, 19 escalated), no regressions in the 33 old cases, chain valid. Also 36/36 on a broker with no Auth0 settings (L01 and L02 are then refused with 503 "no identity provider configured").
+- `test_day13.py` 186/186, twice in a row. Unit (87): settings (off, domain, pasted URL, missing audience, plain-http JWKS only for named hosts), which JWKS keys are usable (RSA, 2048 bits or more, signing use), 19 forged tokens (alg none in three spellings, HS256 keyed with the public key, HS256 with a guessed secret, RS384, PS256, EdDSA, another key with the published kid, a changed payload, embedded `jwk` and `jku` headers, oversized, garbage), 21 signed-but-unusable tokens (issuer, audience, exp, iat, nbf, age, a user's token, wrong `azp`, odd `sub`), and the key cache (one fetch for 20 logins, no refetch storm from unknown kids, rotation picked up after a minute, withdrawn key refused, fail closed after an hour without a refresh, recovery, redirect not followed, oversized or non-JSON key set).
+- Live (99): the done check (the standalone script logs in and its call is allowed; a second run costs no Auth0 token; a wrong secret fails at the issuer), wrong audience, expired, too old, another issuer, a user's token and an unmapped client refused and audited; alg none, HS256 confusion, an unpublished key, the agent's own AgentGate token, garbage and a missing header refused and not audited; no audit row holds a bearer token. The orchestrator key refused for a self-login agent and still working for the demo agents. Sessions: same owner may join, another owner and an unknown id get the same 403, an orchestrator session can't be joined. Taint: re-login after `read_web` starts tainted and the email is still refused; joining a peer's clean session taints it. Kill switch: live token dies, login refused, old token stays dead after re-enabling. Login changes: duplicate client 409, malformed id 400, no-op writes nothing, removal revokes tokens and is audited with who did it.
+- Upgrade: a database created with the Day 12 schema boots the patched broker; `schema.sql` run three more times as the non-superuser: no errors, tool versions unchanged.
+- Concurrency: two agents racing for one client id, 10 requests → one agent holds it; 40 parallel logins → 40 tokens, 40 sessions; 30 parallel logins after a taint → all 30 tainted; chain valid.
+- A half-configured login (domain without audience, a JWKS URL over plain http) stops the boot with a message naming the variable.
+- Day 12 tests 191/191 (the seed-sync check runs here; 190 on Shiwin's machine), registry tests 118/118, `seed_fga.py` sync with API tuples: 15 sanity checks. UI: `svelte-check` 0 errors, `vite build` ok, smoke 55/55 (new route, `X-Admin-Via`, extra fields refused).
+- Latency, main and the patch back to back, two runs each: allowed call +4.2 / +6.5 and +4.2 / +5.6 ms on main; +4.1 / +6.1 and +4.3 / +6.5 ms with the patch.
+- **Not tested:** real Auth0 (the token shape is taken from Auth0's documentation; the workspace can't reach Auth0, and it blocks direct outbound HTTPS, so the JWKS fetch ran over plain http against the mock only). Docker builds and compose (no Docker daemon here), so the `mock-issuer` service and `test_day13.ps1` have not run. Supabase and Render. Slack. The UI in a browser (the new form was checked by svelte-check and the smoke test only). Policy tests, the agents' offline tests and the LLM suite were not re-run: `policy/` and `agents/` are untouched.
 
 ## Day 12 checklist
 - [x] **HTTP upstreams** (`broker/app/upstream.py`, `upstream.kind = "http"`): method, URL template with `{arg}` in the path only (one percent-encoded segment each), static headers, bearer or named-header auth, JSON or query arguments. HTTPS to public addresses only (resolved once, every address checked, connection pinned, certificate checked against the name); `UPSTREAM_PRIVATE_HOSTS` for local mocks. No redirects, timeout, size cap. Result `{status, ok, body}`; taints if `taints_session`.
@@ -18,7 +59,7 @@
 - [x] Tests: `broker/tests/test_day12.py` (190 checks) + `scripts/test_day12.ps1`; suite R01-R04; `eval/day12_check.py` for the Render redeploy check; UI smoke 46 checks.
 - [x] Shiwin: applied `day12.patch` and pushed (2026-11-16)
 - [x] Redeploy check on Render passed (2026-11-16): `setup`, Manual Deploy, `verify` (the API grant was still in OpenFGA and the call still allowed), `cleanup` (grant removed, the next call refused, tool removed); audit chain valid each time. `d12check-bot` stays registered with no grants.
-- [ ] Commit the Render suite result (`eval/results/*.json`, 33/33)
+- [x] Render suite result committed with the follow-up (main at ba5f164)
 
 ## Day 12: apply and deploy
 1. `git pull`, then `git apply --check day12.patch` and `git apply day12.patch`.
@@ -178,6 +219,14 @@
 - Supabase's SQL editor flags `$40` inside a string literal as an UPDATE without WHERE (its client-side parser trips on `$`); build the `$` with `chr(36)` instead.
 
 ## Open bugs / risks
+- Day 13: taint follows a self-login agent only while it holds a live token (10 minutes) in a tainted session. After that a new session is clean, like a new orchestrator run. The allowlist and invoice conditions cover it for the demo tools; a tool granted with plain `direct_if_untainted` relies on taint alone.
+- Day 13: an Auth0 access token is a bearer credential for up to 24 h. A copy lets someone log in as that agent until it expires. Shorter lifetime = more of the token quota. The kill switch and `AUTH0_MAX_TOKEN_AGE_SECONDS` are the controls.
+- Day 13: Auth0's Free plan allows about 1,000 M2M tokens a month for the whole tenant (the figure comes from third-party pricing summaries; check Auth0's pricing page). The dashboard's Test tab counts too. Quota used up = agents can't log in until next month.
+- Day 13: agent login needs Auth0's keys. More than an hour without a successful JWKS fetch and logins fail closed (503).
+- Day 13: a token that Auth0 really signed but that is unusable (expired, another audience) writes one audit row per attempt. Anyone holding any token from the tenant could fill the log this way; forged tokens can't.
+- Day 13: a token minted in the same second as a login change counts as revoked (same rule as the kill switch): wait about 1 s after `PATCH /agents/{id}` before the agent logs in.
+- Day 13: agents that share a session share its taint, and it carries into their next sessions for as long as their tokens live. Two self-login agents of the same owner that never share a session don't see each other's taint.
+- Day 13: `suite-m2m` (suite), and locally `d13-bot`, `d13-peer`, `d13-other`, stay registered with no grants.
 - Day 12: the broker holds real upstream credentials now. A broker compromise exposes them. One env var per upstream; rotating one is a redeploy.
 - Day 12: the admin key can register tools, grant them and approve calls. The UI records which Auth0 account acted; calls with the bare key are recorded as `admin-api`.
 - Day 12: `test_day12.ps1` can't run the seed-sync check inside the broker image (no PyYAML); it is covered by `eval/day12_check.py` on Render.
@@ -201,4 +250,4 @@
   - Render cold start takes about 1 minute.
 
 ## Next step
-Apply `day12-followup.patch` (eval docs, clearer health error) and commit the Render suite results. Then Day 13 (agents log in as themselves), in a new chat. First decision: Auth0 M2M or hashed per-agent API keys (check the Auth0 free-tier M2M quota first).
+Apply `day13.patch`, set up the Auth0 API and one M2M application, add `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` on Render, and run the real done check (steps 6-9 above). Then Days 14-15 (MCP gateway at `/mcp`), in a new chat. Decisions to make first (DAY11_PLAN §5): escalation over MCP (block and wait with progress notifications, or return "pending" and poll) and gateway placement (in the broker process, or a separate service). Check the current `mcp` Python SDK version and pin it.

@@ -1,4 +1,4 @@
-"""Run the 33-case prompt-injection suite through the gate and report the block rate.
+"""Run the 36-case prompt-injection suite through the gate and report the block rate.
 
   python eval/injection_suite.py                    # local broker (.env, http://localhost:8000)
   python eval/injection_suite.py --target render    # deployed broker (.env.render)
@@ -21,6 +21,7 @@ Exit code: 0 = every case matched its expected outcome, 1 = a regression, 2 = se
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 import time
@@ -28,8 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cases import (CASES, SUITE_TOOLS, Call, Case, Delegate, Exchange, Grant, Invoice, Kill,  # noqa: E402
-                   Token, ToolEdit, Ungrant)
+from cases import (CASES, SUITE_AGENT, SUITE_CLIENT, SUITE_TOOLS, Call, Case, Delegate, Exchange, Grant,  # noqa: E402
+                   Invoice, Kill, Login, Token, ToolEdit, Ungrant)
 from gate import REPO, Gate, load_config  # noqa: E402
 
 STOPPED = {"deny": "blocked", "token_denied": "blocked", "refused": "blocked", "escalate": "escalated",
@@ -49,6 +50,25 @@ def setup_tools(gate: Gate) -> None:
             status, body, _ = gate.admin("PATCH", f"/tools/{tool['name']}", fields)
         if status not in (200, 201):
             raise SetupError(f"can't register {tool['name']} ({status}): {body.get('reason')}")
+    # Day 13: an agent that logs in as itself (case L03). Registered once; it stays, with no grants.
+    status, body, _ = gate.admin("POST", "/agents", {"id": SUITE_AGENT, "owner": "shiwin",
+                                                     "display_name": "Suite M2M agent", "auth0_client_id": SUITE_CLIENT})
+    if status == 409:
+        gate.admin("PATCH", f"/agents/{SUITE_AGENT}", {"status": "active"})
+        status, body, _ = gate.admin("PATCH", f"/agents/{SUITE_AGENT}", {"auth0_client_id": SUITE_CLIENT})
+    if status not in (200, 201):
+        raise SetupError(f"can't register {SUITE_AGENT} ({status}): {body.get('reason')}")
+
+
+def forged_login_token(client_id: str) -> str:
+    """What a hijacked agent can build by itself: an unsigned token (alg none) that claims to be
+    an identity-provider token for `client_id`."""
+    def part(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+    now = int(time.time())
+    return (part({"alg": "none", "typ": "JWT", "kid": "none"}) + "."
+            + part({"iss": "https://login.example/", "sub": f"{client_id}@clients", "azp": client_id,
+                    "aud": "agentgate", "gty": "client-credentials", "iat": now, "exp": now + 3600}) + ".")
 
 
 def teardown_tools(gate: Gate) -> None:
@@ -107,6 +127,16 @@ def _run_case(gate: Gate, case: Case, killed: list[str], granted: dict[str, str]
             tokens[step.agent] = body["access_token"]
             session = body["session_id"]
             continue
+
+        if isinstance(step, Login):
+            bearer = forged_login_token(SUITE_CLIENT) if step.bearer == "forged-none" else tokens.get(step.agent, "")
+            status, body, _ = gate.login(bearer, list(step.scopes), f"injection-suite {case.id}")
+            trail.append(f"{step.agent} logs in with {step.bearer} -> {status}")
+            # 401/403 = refused; 503 = this broker has no identity provider configured, so nobody
+            # can log in this way at all. Either way the attack got no token.
+            out.update(outcome="refused" if status in (401, 403, 503) else ("allow" if status == 201 else "error"),
+                       status=status, reason=body.get("reason", ""), audit_id=body.get("audit_id"))
+            break
 
         if isinstance(step, Invoice):
             status, body, _ = gate.admin("POST", "/invoices", {"payee": step.payee, "amount": step.amount})

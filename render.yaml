@@ -49,6 +49,14 @@ services:
         sync: false
       - key: APPROVAL_TTL_SECONDS
         value: "120"
+      # Day 13: agents log in as themselves with an Auth0 machine-to-machine token
+      # (deploy/auth0/README.md). AUTH0_DOMAIN is the tenant domain (dev-abc123.us.auth0.com, no
+      # https://); AUTH0_AUDIENCE is the identifier of the "AgentGate API" you create in Auth0.
+      # Leave both unset and POST /tokens/agent answers 503; everything else works as before.
+      - key: AUTH0_DOMAIN
+        sync: false
+      - key: AUTH0_AUDIENCE
+        sync: false
       # Day 12: credentials for http tools, one secret per upstream, named UPSTREAM_<NAME>; a tool
       # row's credential_ref names the variable. Add each one in the dashboard when you need it
       # (adding a variable redeploys). Example:

@@ -1,10 +1,10 @@
 # PROGRESS
 
-**Current day:** Day 11: tool registry as data (2026-11-16). `day11.patch` delivered. **Not yet applied.** First day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
+**Current day:** Day 11: tool registry as data (2026-11-16). `day11.patch` applied, pushed and deployed. **Day 11 is done.** First day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
 **Build status:** Days 0-10 are done and deployed (one-week MVP, known gaps G01-G05 closed, delegation chains, persistent OpenFGA). Day 11 moves the five demo tools out of Python and into a `tools` table; the gate's behaviour is unchanged for them.
-**Headline numbers after Day 11 (workspace, fresh DB):** **29/29 attacks stopped** (11 blocked, 18 escalated, 0 allowed), the same as Day 10, now with tools read from the database. Registry tests: 117/117. The registry adds about +0.1 ms p50 to an allowed call in the workspace (+3.0 ms before, +3.1 ms after). Latency on Shiwin's machine is still the Day 8 figure (+5.2 ms p50 / +6.5 ms p95). LLM numbers are from Day 9.
+**Headline numbers after Day 11 (workspace, fresh DB):** **29/29 attacks stopped** (11 blocked, 18 escalated, 0 allowed), the same as Day 10, now with tools read from the database. Registry tests: 117/117. The registry adds about +0.1 ms p50 to an allowed call in the workspace (+3.0 ms before, +3.1 ms after). On Render: 29/29, no regressions. Latency on Shiwin's machine after Day 11: **+5.5 ms p50 / +6.8 ms p95** on an allowed call (Day 8: +5.2 / +6.5; the difference covers Days 9-11 together), payment path +7.0 / +8.6. LLM numbers are from Day 9.
 
-**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 10 at 10c5a19) · **Broker:** https://agentgate-broker.onrender.com (Day 11 patch is OpenAPI v0.8.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 11 at d57ad02) · **Broker:** https://agentgate-broker.onrender.com (Day 11 patch is OpenAPI v0.8.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
 
 ## Day 11 checklist
 - [x] **`tools` table** (`broker/schema.sql`): `name`, `description`, `args_schema` (JSON Schema 2020-12), `risk_class`, `context_map`, `taints_session`, `upstream`, `credential_ref`, `enabled`, `version`, `created_by`, `created_at`, `updated_at`. Column defaults are the safe ones: a new row is disabled and taints the session.
@@ -17,7 +17,8 @@
 - [x] **A tool disabled while an approval is pending** turns Approve into a deny, like the kill switch.
 - [x] **`GET /tools`** (admin key): the registry as the gate sees it, with each row's `problem`.
 - [x] Tests: `broker/tests/test_registry.py` (117 checks) and `scripts/test_registry.ps1`. The suite stays at 29 cases (see DECISIONS).
-- [ ] Shiwin: apply `day11.patch`, run the local checks, push, check the Render deploy log, run the Render suite
+- [x] Shiwin: applied `day11.patch`, pushed, Render suite 29/29 with no regressions, local latency bench re-run (2026-11-16)
+- [x] README latency updated to Shiwin's Day 11 run (+5.5 ms p50 / +6.8 ms p95, `eval/results/latency-local-20261117T014140Z.json`): `day11-readme.patch`
 
 ## Day 11: apply and deploy
 1. `git pull`, then `git apply --check day11.patch` and `git apply day11.patch`.
@@ -162,4 +163,4 @@
   - Render cold start takes about 1 minute.
 
 ## Next step
-Apply Day 11, push, check the Render log, run the Render suite. Then Day 12 (forwarding to HTTP upstreams, credentials, agent and grant API). Two decisions from `DAY11_PLAN.md` §5 are needed before Day 12 starts: where upstream credentials live (env vars by name, or encrypted in Postgres) and, for Day 13, Auth0 M2M or hashed per-agent API keys.
+Day 12 (forwarding to HTTP upstreams, credentials, agent and grant API), in a new chat. Decided: upstream credentials are env vars named by `credential_ref`. Still open, for Day 13: Auth0 M2M or hashed per-agent API keys (check the Auth0 free-tier M2M quota first).

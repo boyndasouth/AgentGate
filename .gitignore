@@ -36,3 +36,5 @@ desktop.ini
 .env.render
 # Day 13: examples/agent_login.py caches the Auth0 access token here
 .agentgate-token-cache.json
+.env.agent2
+.agentgate-token-cache-2.json

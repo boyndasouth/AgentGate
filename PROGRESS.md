@@ -1,7 +1,7 @@
 # PROGRESS
 
-**Current day:** Day 13: agents log in as themselves with Auth0 machine-to-machine tokens (2026-11-16). `day13.patch` (against main at ba5f164) applied, pushed and deployed; Auth0 API + M2M application set up; Render suite 36/36 (2026-11-17). Day 12 and its follow-up are applied, pushed and deployed. Third day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
-**Build status:** Days 0-13 are done and deployed (Day 13: the kill-switch beat of the done check is still to run on Render). Day 13 adds `POST /tokens/agent`: an agent that is an Auth0 M2M application trades its Auth0 access token for the usual AgentGate token, and the orchestrator key can no longer mint tokens for it.
+**Current day:** Day 13: agents log in as themselves with Auth0 machine-to-machine tokens (2026-11-16). `day13.patch` (against main at ba5f164) delivered, not yet applied. Day 12 and its follow-up are applied, pushed and deployed. Third day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
+**Build status:** Days 0-12 are done and deployed; Day 13 is built and tested in the workspace. Day 13 adds `POST /tokens/agent`: an agent that is an Auth0 M2M application trades its Auth0 access token for the usual AgentGate token, and the orchestrator key can no longer mint tokens for it.
 **Headline numbers after Day 13 (workspace):** **36/36 attacks stopped** (17 blocked, 19 escalated, 0 allowed): the 33 from Day 12 unchanged plus L01-L03. Day 13 tests 186/186, Day 12 tests 191/191, registry tests 118/118. Allowed-call latency unchanged (main and the patch measured back to back in the workspace, two runs each: +4.2 / +6.5 and +4.2 / +5.6 ms on main, +4.1 / +6.1 and +4.3 / +6.5 ms with the patch). Shiwin's machine after Day 11: +5.5 ms p50 / +6.8 ms p95. LLM numbers are from Day 9.
 
 **Repo:** github.com/boyndasouth/AgentGate (branch main, Day 12 follow-up at ba5f164) · **Broker:** https://agentgate-broker.onrender.com (Day 13 patch is OpenAPI v0.10.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled; Day 13 adds an API ("AgentGate API") and one M2M application per self-login agent (to be created, see `deploy/auth0/README.md`)
@@ -20,12 +20,9 @@
 - [x] **`examples/agent_login.py`:** a standard-library agent with only a client id and secret; caches its Auth0 token in `.agentgate-token-cache.json` (git-ignored).
 - [x] **UI:** optional Auth0 client ID when registering an agent, a Login form per agent (set, change, remove), and each card says how the agent gets its tokens. New server route `PATCH /api/agents/{id}`.
 - [x] Tests: `broker/tests/test_day13.py` (186 checks) + `scripts/test_day13.ps1`; suite L01-L03; UI smoke 55 checks.
-- [x] Shiwin: applied `day13.patch`, ran the local checks, pushed (2026-11-17)
-- [x] Shiwin: Auth0 API "AgentGate API" (its auto-created Test Application is `ext-bot`'s client); `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` on Render (2026-11-17)
-- [x] Render suite 36/36 (17 blocked, 19 escalated), no regressions, chain valid; L01/L02 refused by the real Auth0 check (`eval/results/injection-render-20261117T182029Z.json`, committed) (2026-11-17)
-- [x] Real done check on Render, part 1 (2026-11-17): `ext-bot` (real Auth0 M2M client) refused with `may not hold` before its grant (audit 1286-1290), `grant_added` (1291), then four logins + allowed `query_customers` calls on ONE cached Auth0 token (1292-1300).
-- [ ] Real done check, part 2: kill switch on `ext-bot` → the next login refused with 403. The first attempt never reached the broker (the agent stayed `active`, no `agent_disabled` row); likely the UI confirm dialog. Retry from the UI or `POST /agents/ext-bot/disable`.
-- [ ] Optional: second agent `research-bot` with its own M2M application (least privilege, taint following the agent across sessions, independent kill switches)
+- [ ] Shiwin: apply `day13.patch`, run the local checks, push
+- [ ] Shiwin: Auth0 API + one M2M application; `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` on Render
+- [ ] Render: suite 36/36, then the real done check with `examples/agent_login.py`; commit `eval/results/*.json`
 
 ## Day 13: apply and deploy
 1. `git pull`, then `git apply --check day13.patch` and `git apply day13.patch`.
@@ -253,4 +250,4 @@
   - Render cold start takes about 1 minute.
 
 ## Next step
-Run the kill-switch beat on `ext-bot` (Day 13 checklist). Then Days 14-15 (MCP gateway at `/mcp`), in a new chat. Decisions to make first (DAY11_PLAN §5): escalation over MCP (block and wait with progress notifications, or return "pending" and poll) and gateway placement (in the broker process, or a separate service). Check the current `mcp` Python SDK version and pin it.
+Apply `day13.patch`, set up the Auth0 API and one M2M application, add `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` on Render, and run the real done check (steps 6-9 above). Then Days 14-15 (MCP gateway at `/mcp`), in a new chat. Decisions to make first (DAY11_PLAN §5): escalation over MCP (block and wait with progress notifications, or return "pending" and poll) and gateway placement (in the broker process, or a separate service). Check the current `mcp` Python SDK version and pin it.

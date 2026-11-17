@@ -1,10 +1,19 @@
-// GET /api/agents  →  agent registry from the broker (admin API).
-import { json } from '@sveltejs/kit';
+// GET  /api/agents  →  agent registry with grants (broker admin API).
+// POST /api/agents  →  register an agent (Day 12): {id, owner, display_name?}
+import { error, json } from '@sveltejs/kit';
 import { broker, detail } from '$lib/server/broker';
+import { AGENT_ID, USER, forward, pick, readObject } from '$lib/server/forward';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async () => {
 	const r = await broker<unknown[]>('/agents');
 	if (!r.ok) return json({ detail: detail(r) }, { status: r.status || 502 });
 	return json(r.data);
+};
+
+export const POST: RequestHandler = async ({ request, locals }) => {
+	const body = pick(await readObject(request), ['id', 'owner', 'display_name']);
+	if (typeof body.id !== 'string' || !AGENT_ID.test(body.id)) error(400, 'id: lower-case letters, digits, - and _ (2-64)');
+	if (typeof body.owner !== 'string' || !USER.test(body.owner)) error(400, "owner must look like 'user:<name>'");
+	return forward(locals.admin!, '/agents', 'POST', body);
 };

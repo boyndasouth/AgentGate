@@ -89,11 +89,28 @@ services:
     env_file: .env
     environment:
       FGA_API_URL: http://openfga:8080
+      # Day 12: the mock upstream is on the compose network over plain http, so it must be
+      # named here; everything else must be https on a public address.
+      UPSTREAM_PRIVATE_HOSTS: ${UPSTREAM_PRIVATE_HOSTS:-mock-upstream}
+      UPSTREAM_MOCK_TOKEN: ${UPSTREAM_MOCK_TOKEN:-local-mock-upstream-token}
     ports:
       - "8000:8000"
     depends_on:
       - broker-postgres
       - openfga
+      - mock-upstream
+    restart: unless-stopped
+
+  # Day 12: a fake upstream API (echo, CRM, email, payments) for local tests. Only the broker
+  # talks to it; it is not published to the host. Never deployed.
+  mock-upstream:
+    image: python:3.12-slim
+    command: ["python", "/srv/server.py", "9090"]
+    environment:
+      UPSTREAM_MOCK_TOKEN: ${UPSTREAM_MOCK_TOKEN:-local-mock-upstream-token}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./deploy/mock-upstream/server.py:/srv/server.py:ro
     restart: unless-stopped
   agents:
     build: ./agents

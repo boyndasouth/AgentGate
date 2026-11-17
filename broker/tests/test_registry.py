@@ -97,7 +97,8 @@ def unit() -> None:
         "context_map: payee mapped to a number": row(context_map={"payee": "amount"}),
         "context_map: mapped argument is optional": row(context_map={"payee": "memo"}),
         "context_map is not an object": row(context_map=["amount"]),
-        "upstream kind http (not built yet)": row(upstream={"kind": "http", "url": "https://api.example"}),
+        "upstream kind http without a method": row(upstream={"kind": "http", "url": "https://api.example"}),
+        "upstream kind mcp (not built yet)": row(upstream={"kind": "mcp", "url": "https://mcp.example"}),
         "upstream kind unknown": row(upstream={"kind": "shell"}),
         "upstream missing": row(upstream=None),
         "builtin handler that doesn't exist": row(upstream={"kind": "builtin", "handler": "rm_rf"}),
@@ -405,7 +406,7 @@ async def _live(g: Live) -> None:
                        {"kind": "builtin", "handler": "read_inbox"}, True)
     status, tools = g.admin("GET", "/tools")
     probs = {t["name"]: t["problem"] for t in tools}
-    check("an http upstream is unusable for now", "not supported" in (probs.get("regtest.http") or ""), probs)
+    check("an http upstream without a method is unusable", "upstream.method" in (probs.get("regtest.http") or ""), probs)
     check("a schema that allows unknown arguments is unusable", "additionalProperties" in (probs.get("regtest.openschema") or ""), probs)
     status, body = g.mint("mailer", ["regtest.http"])
     check("no token for a misconfigured tool", status == 400, body)

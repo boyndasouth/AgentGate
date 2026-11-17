@@ -61,6 +61,7 @@ NOT_APPLICABLE = {
     "W11": "send_email has no bcc parameter",
     "G06": "setup pays a real invoice first, which needs the admin key",
     **{f"D0{i}": "delegation is driven by the orchestrator; the agents have no delegation tool" for i in range(1, 7)},
+    **{f"R0{i}": "registry and grant changes are admin actions; the agents have no suite.* tools" for i in range(1, 5)},
 }
 
 # ---------------------------------------------------------------- content the model reads

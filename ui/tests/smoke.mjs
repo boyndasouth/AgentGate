@@ -79,6 +79,54 @@ const kr2 = await demo.runScenario('kill-retry', undefined);
 check('kill-retry without token explains', kr2.steps.length === 0 && /first/.test(kr2.agentSays));
 await broker('/agents/mailer/enable', { method: 'POST' });
 
+// Day 12: registering agents and tools, grants, approvers through the UI's server routes
+const admin = adminFromSession(s('auth0|admin1', 'x@y.z', false));
+const call = async (file, method, { params = {}, body } = {}) => {
+	const mod = await vite.ssrLoadModule(file);
+	const request = new Request('http://ui.test/x', { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+	try {
+		const res = await mod[method]({ params, request, locals: { admin } });
+		return { status: res.status, data: await res.json() };
+	} catch (e) {
+		return { status: e?.status ?? 500, data: e?.body ?? String(e) };
+	}
+};
+const vias = async () => (await (await fetch('http://127.0.0.1:8765/__via', { method: 'DELETE' })).json());
+let r = await call('/src/routes/api/agents/+server.ts', 'POST', { body: { id: 'support-bot', owner: 'user:shiwin', display_name: 'Support bot' } });
+check('register agent → 201', r.status === 201, JSON.stringify(r.data));
+check('  ... the broker got X-Admin-Via from the session', (await vias()).at(-1) === 'admin-ui:auth0|admin1');
+r = await call('/src/routes/api/agents/+server.ts', 'POST', { body: { id: 'support-bot', owner: 'user:shiwin' } });
+check('register it twice → 409 passed through', r.status === 409);
+r = await call('/src/routes/api/agents/+server.ts', 'POST', { body: { id: 'Bad/Id', owner: 'user:shiwin' } });
+check('bad agent id refused by the UI server', r.status === 400);
+r = await call('/src/routes/api/agents/+server.ts', 'POST', { body: { id: 'x-bot', owner: 'user:shiwin', via: 'slack:U1' } });
+check('a browser can\'t smuggle extra fields (via)', r.status === 400);
+r = await call('/src/routes/api/tools/+server.ts', 'POST', { body: { name: 'crm.update_ticket', risk_class: 'write', args_schema: {}, upstream: { kind: 'http' } } });
+check('register tool → 201', r.status === 201, JSON.stringify(r.data));
+r = await call('/src/routes/api/agents/[id]/grants/+server.ts', 'POST', { params: { id: 'support-bot' }, body: { tool: 'send_email' } });
+check('grant on an egress tool without a mode → approval', r.status === 201 && r.data.mode === 'approval' && r.data.defaulted, JSON.stringify(r.data));
+r = await call('/src/routes/api/agents/[id]/grants/+server.ts', 'POST', { params: { id: 'support-bot' }, body: { tool: 'transfer_funds', mode: 'direct' } });
+check('direct grant on a money tool comes back with a warning', r.status === 201 && /money/.test(r.data.warning ?? ''), JSON.stringify(r.data));
+const { directWarning, defaultMode, paramsFor } = await vite.ssrLoadModule('/src/lib/grants.ts');
+check('UI warns before a direct grant on a risky tool', /without a human/.test(directWarning('destructive', 'direct')) && directWarning('read', 'direct') === null);
+check('UI default mode matches the broker', defaultMode('money') === 'approval' && defaultMode('write') === 'direct_if_untainted' && defaultMode('read') === 'direct');
+check('params from the form', JSON.stringify(paramsFor('direct_known_payee_with_invoice', { max_amount: '100', allowed_payees: 'a, b' })) === '{"max_amount":100,"allowed_payees":["a","b"]}');
+const ag2 = await broker('/agents');
+const bot = ag2.data.find((a) => a.id === 'support-bot');
+check('agents list shows the API grants with risk class and source', bot?.grants?.length === 2 && bot.grants.every((x) => x.source === 'api' && x.risk_class));
+r = await call('/src/routes/api/agents/[id]/grants/+server.ts', 'DELETE', { params: { id: 'support-bot' }, body: { tool: 'transfer_funds', mode: 'direct' } });
+check('remove a grant → 200', r.status === 200, JSON.stringify(r.data));
+r = await call('/src/routes/api/tools/[name]/+server.ts', 'PATCH', { params: { name: 'send_email' }, body: { enabled: false } });
+check('switch a tool off → 200', r.status === 200 && r.data.enabled === false);
+r = await call('/src/routes/api/tools/[name]/+server.ts', 'PATCH', { params: { name: 'send_email' }, body: { name: 'x' } });
+check('PATCH can\'t rename a tool', r.status === 400);
+r = await call('/src/routes/api/tools/[name]/approvers/+server.ts', 'POST', { params: { name: 'send_email' }, body: { user: 'user:alex' } });
+check('add an approver → 201', r.status === 201);
+r = await call('/src/routes/api/tools/[name]/approvers/[user]/+server.ts', 'DELETE', { params: { name: 'send_email', user: 'user:alex' } });
+check('remove an approver → 200', r.status === 200);
+r = await call('/src/routes/api/tools/+server.ts', 'GET');
+check('tools list', r.status === 200 && r.data.some((t) => t.name === 'crm.update_ticket'));
+
 // broker down (the runner stops the mock first; $env is a startup snapshot)
 await fetch('http://127.0.0.1:8765/__stop').catch(() => {});
 await new Promise((r) => setTimeout(r, 300));

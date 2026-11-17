@@ -134,3 +134,22 @@ tr.broken td { background: #450a0a !important; outline: 1px solid #ef4444; }
 @keyframes flash { from { background: #134e4a; } to { background: transparent; } }
 
 .rt-note { margin: -4px 0 8px; padding: 6px 8px; border: 1px dashed var(--line); border-radius: 6px; }
+
+/* Day 12: forms, risk classes, tools */
+.form { display: grid; gap: 8px; background: #0b1118; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.form label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+.form label.check { display: flex; gap: 6px; align-items: center; color: var(--text); }
+input, textarea { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; font: inherit; font-size: 13px; }
+textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
+input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.note { color: #bbf7d0; background: #052e16; border: 1px solid #166534; padding: 6px 10px; border-radius: 8px; margin: 8px 0; }
+.warn { color: #fde68a; background: #3b2506; border: 1px solid #92400e; padding: 6px 10px; border-radius: 8px; margin: 0; }
+.grow { flex: 1; }
+.pill.risk.read { color: #bfdbfe; background: #0b2440; border-color: #1e3a8a; }
+.pill.risk.write { color: #e5e7eb; background: #1f2937; border-color: #4b5563; }
+.pill.risk.egress { color: #fde68a; background: #3b2506; border-color: #92400e; }
+.pill.risk.money { color: #fed7aa; background: #431407; border-color: #c2410c; }
+.pill.risk.destructive { color: #fecaca; background: #3f0d0d; border-color: #b91c1c; }
+.tools { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.tool { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; }
+.tool.off { opacity: 0.7; border-style: dashed; }

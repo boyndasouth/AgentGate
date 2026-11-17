@@ -160,8 +160,8 @@ CREATE TABLE IF NOT EXISTS tools (
     risk_class      text NOT NULL CHECK (risk_class IN ('read', 'write', 'egress', 'money', 'destructive')),
     context_map     jsonb NOT NULL DEFAULT '{}',     -- policy input -> argument name: amount, url, recipient, payee, invoice
     taints_session  boolean NOT NULL DEFAULT true,   -- returns outside content; the session is tainted after a call
-    upstream        jsonb NOT NULL,                  -- {"kind": "builtin" | "http" | "mcp", ...}; http and mcp arrive on Day 12+
-    credential_ref  text,                            -- NAME of the upstream credential (Day 12), never the secret
+    upstream        jsonb NOT NULL,                  -- {"kind": "builtin" | "http" | "mcp", ...}; http since Day 12, mcp later
+    credential_ref  text,                            -- NAME of an env var (UPSTREAM_...) holding the upstream credential, never the secret
     enabled         boolean NOT NULL DEFAULT false,
     version         integer NOT NULL DEFAULT 1,      -- bumped by the trigger on every real change
     created_by      text NOT NULL,
@@ -231,9 +231,39 @@ VALUES
      'read', '{}', false, '{"kind": "builtin"}', true, 'seed')
 ON CONFLICT (name) DO NOTHING;
 
+-- Day 12: agents, grants and approvers can be made through the admin API, not only seed files.
+-- OpenFGA holds the tuples the gate checks; these tables are the record of what the API wrote,
+-- so that (a) the boot-time sync in deploy/render/seed_fga.py keeps them (it makes the store
+-- equal to policy/tuples.yaml PLUS these rows) and (b) the broker can write them again into a
+-- fresh store. A grant that is in OpenFGA but not here comes from policy/tuples.yaml and can
+-- only be changed there.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS created_by text NOT NULL DEFAULT 'seed';
+
+CREATE TABLE IF NOT EXISTS grants (
+    agent_id    text NOT NULL REFERENCES agents(id),
+    tool        text NOT NULL,                   -- no FK: a tool row removed in SQL leaves a dead, harmless grant
+    relation    text NOT NULL CHECK (relation IN ('direct_invoker', 'approval_invoker')),
+    mode        text NOT NULL,                   -- direct | direct_if_untainted | direct_allowlisted_recipient | ... | approval
+    params      jsonb NOT NULL DEFAULT '{}',     -- the mode's allowlist / limit, as given to the API
+    fga_tuple   jsonb NOT NULL,                  -- the OpenFGA tuple key exactly as written
+    created_by  text NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (agent_id, tool, relation)       -- OpenFGA holds one tuple per (user, relation, object)
+);
+
+CREATE TABLE IF NOT EXISTS tool_approvers (
+    tool        text NOT NULL,
+    user_id     text NOT NULL,                   -- 'user:shiwin'
+    created_by  text NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tool, user_id)
+);
+
 -- Supabase exposes `public` through its REST API; the broker connects as postgres and bypasses RLS.
 -- (The six Day 3 tables are covered by deploy/supabase_rls.sql; new tables enable it here.)
 ALTER TABLE invoices    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE delegations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tools          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE registry_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE grants         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tool_approvers ENABLE ROW LEVEL SECURITY;

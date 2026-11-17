@@ -22,6 +22,12 @@ GRANTS = {             # Day 10: what GET /agents reads from OpenFGA in the real
                 {"tool": "transfer_funds", "mode": "approval", "condition": None, "context": {}, "taints": False, "approvers": ["user:shiwin"]}],
 }
 revoked_agents = {}
+# Day 12: the registry and API-made grants, with the X-Admin-Via label the UI server sent
+tools = {n: {"name": n, "risk_class": r, "taints_session": n.startswith("read"), "enabled": True, "problem": None,
+             "upstream": {"kind": "builtin"}, "credential_ref": None, "context_map": {}, "approvers": []}
+         for n, r in (("read_web", "read"), ("send_email", "egress"), ("transfer_funds", "money"))}
+last_via = []
+RISKY = ("egress", "money", "destructive")
 
 def audit(**kw):
     events.append({"id": len(events) + 1, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ"), "decision": "info", "reason": "", **kw})
@@ -55,12 +61,70 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"status": a["status"]})
         if not self.admin(): return self.send(401, {"detail": "admin key required"})
         if p == "/agents": return self.send(200, [{**a, "grants": GRANTS.get(a["id"], []), "delegations": []} for a in agents.values()])
+        if p == "/tools": return self.send(200, list(tools.values()))
         if p == "/approvals": return self.send(200, [{k: v for k, v in a.items() if k != "args"} for a in approvals.values() if a["status"] == "pending"])
         if p == "/audit/events": return self.send(200, list(reversed(events))[:50])
         self.send(404, {"detail": "not found"})
 
+    def admin_write(self, method, p, b):
+        """Day 12 admin API: strict like the real one (unknown fields -> 400)."""
+        if not self.admin(): return self.send(401, {"detail": "admin key required"})
+        via = self.headers.get("X-Admin-Via")
+        if via is not None and not via.startswith("admin-ui:"): return self.send(400, {"reason": "bad via"})
+        last_via.append(via or "admin-api")
+        path, _, q = p.partition("?")
+        parts = path.strip("/").split("/")
+        if method == "POST" and path == "/agents":
+            if set(b) - {"id", "owner", "display_name"}: return self.send(400, {"reason": "Validation failed"})
+            if b["id"] in agents: return self.send(409, {"reason": f"agent '{b['id']}' is already registered"})
+            agents[b["id"]] = {"id": b["id"], "owner": b["owner"], "display_name": b.get("display_name", b["id"]), "status": "active"}
+            return self.send(201, {**agents[b["id"]], "grants": []})
+        if method == "POST" and len(parts) == 3 and parts[0] == "agents" and parts[2] == "grants":
+            if set(b) - {"tool", "mode", "params"}: return self.send(400, {"reason": "Validation failed"})
+            t = tools.get(b["tool"])
+            if not t: return self.send(404, {"reason": "unknown tool"})
+            mode = b.get("mode") or ("approval" if t["risk_class"] in RISKY else "direct")
+            warn = f"'{t['name']}' is a {t['risk_class']} tool" if mode == "direct" and t["risk_class"] in RISKY else None
+            GRANTS.setdefault(parts[1], []).append({"tool": t["name"], "mode": "approval" if mode == "approval" else "direct",
+                                                    "grant_mode": mode, "condition": None, "context": {}, "source": "api",
+                                                    "risk_class": t["risk_class"], "approvers": []})
+            return self.send(201, {"agent_id": parts[1], "tool": t["name"], "mode": mode, "params": b.get("params") or {},
+                                   "defaulted": "mode" not in b, "warning": warn})
+        if method == "DELETE" and len(parts) == 3 and parts[2] == "grants":
+            qs = dict(x.split("=", 1) for x in q.split("&") if "=" in x)
+            before = GRANTS.get(parts[1], [])
+            keep = [g for g in before if not (g["tool"] == qs.get("tool") and g.get("source") == "api"
+                                                and qs.get("mode") in (None, g.get("grant_mode")))]
+            if len(keep) == len(before): return self.send(404, {"reason": "no such grant"})
+            GRANTS[parts[1]] = keep
+            return self.send(200, {"removed": [{"tool": qs.get("tool")}]})
+        if method == "POST" and path == "/tools":
+            if b.get("name") in tools: return self.send(409, {"reason": "tool exists"})
+            tools[b["name"]] = {"enabled": False, "problem": None, "approvers": [], "taints_session": True, **b}
+            return self.send(201, tools[b["name"]])
+        if method == "PATCH" and len(parts) == 2 and parts[0] == "tools":
+            if parts[1] not in tools: return self.send(404, {"reason": "unknown tool"})
+            tools[parts[1]].update(b); return self.send(200, tools[parts[1]])
+        if method == "POST" and len(parts) == 3 and parts[2] == "approvers":
+            tools[parts[1]]["approvers"].append({"user": b["user"], "source": "api"})
+            return self.send(201, {"tool": parts[1], "user": b["user"]})
+        if method == "DELETE" and len(parts) == 4 and parts[2] == "approvers":
+            tools[parts[1]]["approvers"] = [a for a in tools[parts[1]]["approvers"] if a["user"] != parts[3].replace("%3A", ":")]
+            return self.send(200, {"tool": parts[1]})
+        return None
+
+    def do_PATCH(self):
+        if self.admin_write("PATCH", self.path, self.body()) is None: self.send(404, {"detail": "not found"})
+
+    def do_DELETE(self):
+        if self.path == "/__via": return self.send(200, last_via)
+        if self.admin_write("DELETE", self.path, {}) is None: self.send(404, {"detail": "not found"})
+
     def do_POST(self):
         p, b = self.path, self.body()
+        if p in ("/agents", "/tools") or p.endswith("/grants") or p.endswith("/approvers"):
+            if self.admin_write("POST", p, b) is None: self.send(404, {"detail": "not found"})
+            return
         if p == "/tokens":
             if self.headers.get("X-Orchestrator-Key") != ORCH: return self.send(401, {"detail": "orchestrator key required"})
             ag = b["agent_id"]

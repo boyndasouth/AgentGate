@@ -1,4 +1,4 @@
-"""Run the 29-case prompt-injection suite through the gate and report the block rate.
+"""Run the 33-case prompt-injection suite through the gate and report the block rate.
 
   python eval/injection_suite.py                    # local broker (.env, http://localhost:8000)
   python eval/injection_suite.py --target render    # deployed broker (.env.render)
@@ -8,7 +8,11 @@
 Each case plays the calls a fully hijacked agent team would make (see eval/cases.py).
 Escalations are cancelled by the agent right after they're recorded, so nothing is left
 pending and a late Slack click can't run the call. With Slack on, every escalation still
-posts a message (~13); run locally with Slack off if you don't want the pings.
+posts a message (~19); run locally with Slack off if you don't want the pings.
+
+Day 12: before the cases, the runner registers two suite-only tools through the admin API
+(`suite.lookup`, `suite.notify`, see cases.SUITE_TOOLS); the R cases grant, ungrant and edit them.
+Every grant and edit is undone after its case, and both tools are removed at the end.
 
 Writes eval/results/injection-<target>-<utc>.json and prints a Markdown table for the README.
 Exit code: 0 = every case matched its expected outcome, 1 = a regression, 2 = setup error.
@@ -24,7 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cases import CASES, Call, Case, Delegate, Exchange, Invoice, Kill, Token  # noqa: E402
+from cases import (CASES, SUITE_TOOLS, Call, Case, Delegate, Exchange, Grant, Invoice, Kill,  # noqa: E402
+                   Token, ToolEdit, Ungrant)
 from gate import REPO, Gate, load_config  # noqa: E402
 
 STOPPED = {"deny": "blocked", "token_denied": "blocked", "refused": "blocked", "escalate": "escalated",
@@ -35,12 +40,33 @@ class SetupError(Exception):
     pass
 
 
+def setup_tools(gate: Gate) -> None:
+    """Day 12: register the suite-only tools (or reset them if a crashed run left them behind)."""
+    for tool in SUITE_TOOLS:
+        status, body, _ = gate.admin("POST", "/tools", tool)
+        if status == 409:
+            fields = {k: v for k, v in tool.items() if k != "name"}
+            status, body, _ = gate.admin("PATCH", f"/tools/{tool['name']}", fields)
+        if status not in (200, 201):
+            raise SetupError(f"can't register {tool['name']} ({status}): {body.get('reason')}")
+
+
+def teardown_tools(gate: Gate) -> None:
+    for tool in SUITE_TOOLS:
+        for agent in ("researcher", "mailer", "finance"):
+            gate.admin("DELETE", f"/agents/{agent}/grants?tool={tool['name']}")
+        gate.admin("DELETE", f"/tools/{tool['name']}")
+
+
 def run_case(gate: Gate, case: Case) -> dict:
     killed: list[str] = []
     granted: dict[str, str] = {}
+    undo: list[tuple[str, str, dict | None]] = []     # Day 12: admin changes to reverse, newest first
     try:
-        return _run_case(gate, case, killed, granted)
+        return _run_case(gate, case, killed, granted, undo)
     finally:
+        for method, path, body in reversed(undo):
+            gate.admin(method, path, body)
         for did in granted.values():   # Day 10: leave no live test delegations behind (cascades to hop 2)
             gate.admin("POST", f"/delegations/{did}/revoke", {"reason": f"injection-suite {case.id} cleanup"})
         for agent in killed:          # Day 10: leave every agent active for the next case
@@ -49,7 +75,8 @@ def run_case(gate: Gate, case: Case) -> dict:
             time.sleep(1.2)           # a token minted in the kill switch's second counts as revoked
 
 
-def _run_case(gate: Gate, case: Case, killed: list[str], granted: dict[str, str]) -> dict:
+def _run_case(gate: Gate, case: Case, killed: list[str], granted: dict[str, str],
+              undo: list[tuple[str, str, dict | None]]) -> dict:
     session: str | None = None
     tokens: dict[str, str] = {}
     # granted: Day 10, delegate -> delegation id granted to it (the caller revokes them afterwards)
@@ -87,6 +114,30 @@ def _run_case(gate: Gate, case: Case, killed: list[str], granted: dict[str, str]
                 raise SetupError(f"{case.id}: invoice refused ({status}): {body}")
             invoice = body["id"]
             trail.append(f"invoice {invoice} {step.amount} -> {status}")
+            continue
+
+        if isinstance(step, Grant):
+            body = {"tool": step.tool, **({"mode": step.mode} if step.mode else {})}
+            status, out_body, _ = gate.admin("POST", f"/agents/{step.agent}/grants", body)
+            if status != 201:
+                raise SetupError(f"{case.id}: grant refused ({status}): {out_body.get('reason')}")
+            undo.append(("DELETE", f"/agents/{step.agent}/grants?tool={step.tool}", None))
+            trail.append(f"admin grants {step.agent} {step.tool} ({out_body.get('mode')}) -> {status}")
+            continue
+
+        if isinstance(step, Ungrant):
+            status, out_body, _ = gate.admin("DELETE", f"/agents/{step.agent}/grants?tool={step.tool}")
+            if status != 200:
+                raise SetupError(f"{case.id}: ungrant refused ({status}): {out_body.get('reason')}")
+            trail.append(f"admin removes {step.agent}'s grant on {step.tool} -> {status}")
+            continue
+
+        if isinstance(step, ToolEdit):
+            status, out_body, _ = gate.admin("PATCH", f"/tools/{step.tool}", step.changes)
+            if status != 200:
+                raise SetupError(f"{case.id}: tool edit refused ({status}): {out_body.get('reason')}")
+            undo.append(("PATCH", f"/tools/{step.tool}", step.undo))
+            trail.append(f"admin edits {step.tool} {step.changes} -> {status}")
             continue
 
         if isinstance(step, Kill):
@@ -170,19 +221,27 @@ def main() -> int:
           f"(slack={health.get('slack')}). Worst case: every payload is fully obeyed.\n")
 
     results = []
-    for case in cases:
-        try:
-            r = run_case(gate, case)
-        except SetupError as exc:
-            print(f"SETUP ERROR {exc}")
-            return 2
-        results.append(r)
-        mark = "ok " if r["matched"] else "!! "
-        taint = {True: "tainted", False: "clean", None: "-"}[r["session_tainted"]]
-        print(f"{mark}{r['id']:4} {r['result']:9} {r['status']!s:4} {taint:8} {r['goal'][:58]:58} "
-              f"{'(known gap)' if case.gap else ''}")
-        if not r["matched"]:
-            print(f"     expected {case.expect}, got {r['outcome']}: {r['reason']}")
+    try:
+        setup_tools(gate)
+    except SetupError as exc:
+        print(f"SETUP ERROR {exc}")
+        return 2
+    try:
+        for case in cases:
+            try:
+                r = run_case(gate, case)
+            except SetupError as exc:
+                print(f"SETUP ERROR {exc}")
+                return 2
+            results.append(r)
+            mark = "ok " if r["matched"] else "!! "
+            taint = {True: "tainted", False: "clean", None: "-"}[r["session_tainted"]]
+            print(f"{mark}{r['id']:4} {r['result']:9} {r['status']!s:4} {taint:8} {r['goal'][:58]:58} "
+                  f"{'(known gap)' if case.gap else ''}")
+            if not r["matched"]:
+                print(f"     expected {case.expect}, got {r['outcome']}: {r['reason']}")
+    finally:
+        teardown_tools(gate)
 
     n = len(results)
     blocked = sum(r["result"] == "blocked" for r in results)

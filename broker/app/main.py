@@ -6,9 +6,7 @@ OpenAPI:      http://localhost:8000/schema/openapi.json   (Swagger UI at /schema
 
 from __future__ import annotations
 
-import hmac
 import logging
-import re
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -18,15 +16,14 @@ from typing import Any
 import asyncpg
 import msgspec
 from litestar import Litestar, Request, Response, asgi, get, post
-from litestar.connection import ASGIConnection
 from litestar.datastructures import State
 from litestar.di import Provide
-from litestar.exceptions import NotAuthorizedException, NotFoundException
-from litestar.handlers.base import BaseRouteHandler
+from litestar.exceptions import NotFoundException
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.spec import Components, SecurityScheme
 
-from . import audit, delegation, invoices, registry, taint
+from . import admin_api, audit, delegation, grants, invoices, registry, taint, upstream
+from .deps import VIA, _json, admin_guard, orchestrator_guard, provide_conn
 from .approvals import ApprovalError, ApprovalService, Approver, admin_view, agent_view
 from .config import load_settings
 from .db import create_pool
@@ -61,6 +58,15 @@ async def lifespan(app: Litestar) -> AsyncGenerator[None, None]:
     unusable = [t.name for t in REGISTRY.all() if t.problem]
     log.info("tool registry: %d tools (%d enabled)%s", len(REGISTRY.all()), sum(t.usable for t in REGISTRY.all()),
              f"; UNUSABLE: {', '.join(unusable)}" if unusable else "")
+    # Day 12: grants, approvers and owners made through the admin API live in Postgres too. A fresh
+    # store (local `load_store.py --replace`) gets them back here; nothing is ever deleted.
+    try:
+        async with app.state.pool.acquire() as conn:
+            written, differing = await grants.reconcile(conn, app.state.fga)
+        log.info("api grants: %d written back to OpenFGA%s", written,
+                 f", {differing} differ from the store (left as they are)" if differing else "")
+    except PolicyEngineError as exc:
+        log.warning("api grants not reconciled (OpenFGA unreachable): %s", exc)
 
     approvals = ApprovalService(app.state.pool, app.state.fga, ttl_seconds=settings.approval_ttl_seconds)
     app.state.approvals = approvals
@@ -77,29 +83,10 @@ async def lifespan(app: Litestar) -> AsyncGenerator[None, None]:
     finally:
         if app.state.slack is not None:
             await app.state.slack.stop()
+        await upstream.close()
         await app.state.fga.close()
         await app.state.pool.close()
 
-
-async def provide_conn(state: State) -> AsyncGenerator[asyncpg.Connection, None]:
-    async with state.pool.acquire() as conn:
-        yield conn
-
-
-# ---------------------------------------------------------------- guards
-
-
-def _key_guard(header: str, setting: str):
-    def guard(connection: ASGIConnection, _: BaseRouteHandler) -> None:
-        supplied = connection.headers.get(header, "")
-        expected = getattr(connection.app.state.settings, setting)
-        if not supplied or not hmac.compare_digest(supplied, expected):
-            raise NotAuthorizedException(f"missing or wrong {header}")
-    return guard
-
-
-admin_guard = _key_guard("x-admin-key", "admin_api_key")             # TODO(Day 6): Auth0 login
-orchestrator_guard = _key_guard("x-orchestrator-key", "orchestrator_api_key")
 
 # ---------------------------------------------------------------- schemas
 
@@ -177,10 +164,6 @@ class ToolResult(msgspec.Struct, omit_defaults=True):
     approval_id: str | None = None   # escalate only
     status: str | None = None        # escalate: 'pending'
     expires_at: str | None = None    # escalate: when the approval times out (counts as deny)
-
-
-def _json(status: int, body: Any) -> Response:
-    return Response(content=body, status_code=status)
 
 
 # ---------------------------------------------------------------- public
@@ -467,35 +450,19 @@ async def list_invoices(conn: asyncpg.Connection, limit: int = 50) -> list[dict]
 async def list_agents(state: State, conn: asyncpg.Connection) -> list[dict]:
     """Agents with their grants, read live from OpenFGA (Day 10: the UI no longer keeps a copy),
     and the delegations they take part in. `grants` is null if OpenFGA can't be read."""
-    rows = await conn.fetch("SELECT id, owner, display_name, status FROM agents ORDER BY id")
+    rows = await conn.fetch("SELECT id, owner, display_name, status, created_by FROM agents ORDER BY id")
     try:
         tuples = await state.fga.read()
     except PolicyEngineError:
         tuples = None
-    approvers: dict[str, list[str]] = {}
-    grants: dict[str, list[dict]] = {}
-    for t in tuples or []:
-        if not t["object"].startswith("tool:"):
-            continue
-        tool = t["object"][5:]
-        if t["relation"] == "approver":
-            approvers.setdefault(tool, []).append(t["user"])
-        elif t["user"].startswith("agent:"):
-            cond = t.get("condition") or {}
-            grants.setdefault(t["user"][6:], []).append({
-                "tool": tool, "mode": "direct" if t["relation"] == "direct_invoker" else "approval",
-                "condition": cond.get("name"), "context": cond.get("context") or {},
-                "taints": bool(REGISTRY.peek(tool).taints) if REGISTRY.peek(tool) else False,
-                "approvers": None})
-    for gs in grants.values():
-        for g in gs:
-            g["approvers"] = sorted(approvers.get(g["tool"], []))
-            gs.sort(key=lambda g: (g["tool"], g["mode"] != "direct"))
+    await REGISTRY.sync(conn)
+    # Day 12: each grant says whether it came from the API (removable) or the seed file.
+    by_agent, _ = grants.view(tuples or [], await grants.managed_keys(conn))
     active = await delegation.listing(conn, active_only=True, limit=500)
     out = []
     for r in rows:
         a = dict(r)
-        a["grants"] = None if tuples is None else grants.get(r["id"], [])
+        a["grants"] = None if tuples is None else by_agent.get(r["id"], [])
         a["delegations"] = [{**d, "role": "granted" if d["delegator"] == r["id"] else "received"}
                             for d in active if r["id"] in (d["delegator"], d["delegate"])]
         out.append(a)
@@ -507,30 +474,21 @@ async def list_agents(state: State, conn: asyncpg.Connection) -> list[dict]:
 async def disable_agent(agent_id: str, data: KillSwitchRequest, state: State, conn: asyncpg.Connection) -> dict:
     """Kill switch: every existing token for this agent stops working at once,
     and no new ones are issued until it is re-enabled."""
-    async with conn.transaction():
-        updated = await conn.fetchval(
-            "UPDATE agents SET status = 'disabled' WHERE id = $1 RETURNING id", agent_id)
-        if updated is None:
-            raise NotFoundException(f"unknown agent '{agent_id}'")
-        await conn.execute("INSERT INTO revocations (agent_id, reason) VALUES ($1, $2)", agent_id, data.reason)
-    ev = await audit.append_event(conn, event_type="agent_disabled", decision="info", reason=data.reason,
-                                  agent_id=agent_id)
     # Day 10: every delegation the agent takes part in dies too, and stays dead after re-enabling.
-    revoked = await delegation.revoke(conn, state.fga, where="delegator = $1 OR delegate = $1 OR principal = $1",
-                                      args=[agent_id], reason=f"kill switch on agent:{agent_id}", by="admin-api")
-    return {"agent_id": agent_id, "status": "disabled", "audit_id": ev["id"], "delegations_revoked": revoked}
+    out = await admin_api.kill_switch(conn, state.fga, agent_id, data.reason)
+    if out is None:
+        raise NotFoundException(f"unknown agent '{agent_id}'")
+    return out
 
 
 @post("/agents/{agent_id:str}/enable", tags=["agents"], guards=[admin_guard], status_code=200,
       dependencies={"conn": Provide(provide_conn)}, security=[{"AdminKey": []}])
 async def enable_agent(agent_id: str, conn: asyncpg.Connection) -> dict:
     """Re-enable after a kill switch. Old tokens stay revoked; the agent needs new ones."""
-    updated = await conn.fetchval("UPDATE agents SET status = 'active' WHERE id = $1 RETURNING id", agent_id)
-    if updated is None:
+    out = await admin_api.re_enable(conn, agent_id)
+    if out is None:
         raise NotFoundException(f"unknown agent '{agent_id}'")
-    ev = await audit.append_event(conn, event_type="agent_enabled", decision="info",
-                                  reason="re-enabled by admin", agent_id=agent_id)
-    return {"agent_id": agent_id, "status": "active", "audit_id": ev["id"]}
+    return out
 
 
 # ---------------------------------------------------------------- tool gateway
@@ -538,11 +496,17 @@ async def enable_agent(agent_id: str, conn: asyncpg.Connection) -> dict:
 
 @get("/tools", tags=["tools"], guards=[admin_guard], dependencies={"conn": Provide(provide_conn)},
      security=[{"AdminKey": []}])
-async def list_tools(conn: asyncpg.Connection) -> list[dict]:
+async def list_tools(state: State, conn: asyncpg.Connection) -> list[dict]:
     """Day 11: the tool registry as the gate sees it. `problem` says why a row can't be used
-    (every call to such a tool is denied). `credential_ref` is a name, never a secret."""
+    (every call to such a tool is denied). `credential_ref` is a name, never a secret.
+    Day 12: `approvers` (read from OpenFGA, null if it can't be read) with each one's source."""
     await REGISTRY.sync(conn)
-    return [t.public() for t in REGISTRY.all()]
+    try:
+        _, approvers = grants.view(await state.fga.read(), await grants.managed_keys(conn))
+    except PolicyEngineError:
+        approvers = None
+    return [{**t.public(), "approvers": None if approvers is None else approvers.get(t.name, [])}
+            for t in REGISTRY.all()]
 
 
 @post("/tools/{name:str}", tags=["tools"], status_code=200, dependencies={"conn": Provide(provide_conn)},
@@ -670,16 +634,24 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     # 6. Allow: run the tool (the broker, not the agent, holds any real API keys).
     #    Day 10: a payment allowed against an invoice settles it in the same transaction, so two
     #    calls racing to pay the same invoice can't both go through.
+    #    Day 12: an http upstream is called with the credential the broker holds; the agent gets
+    #    the upstream's status and body, scrubbed of that credential.
     try:
         async with conn.transaction():
             if inv.ok and not await invoices.settle(conn, ctx.invoice_id, ctx.payee, ctx.amount):
                 raise ValueError("the invoice was paid by another call a moment ago")
             result = await registry.run(tool, args)
             if inv.ok:
-                await invoices.record_tx(conn, ctx.invoice_id, result.get("tx_id", ""))
+                await invoices.record_tx(conn, ctx.invoice_id, registry.tx_id_of(result))
     except ValueError as exc:
         ev = await record("allow", f"{decision.reason}; tool rejected input: {exc}", args_hash=args_hash)
         return _json(400, ToolResult(decision="allow", reason=f"tool error: {exc}", tool=name,
+                                     audit_id=ev["id"], session_tainted=tainted))
+    except upstream.UpstreamError as exc:
+        # Allowed, but no usable answer. Nothing from the upstream reaches the agent, so the
+        # session isn't tainted by it. The text is written by the broker, never copied.
+        ev = await record("allow", f"{decision.reason}; upstream error: {exc}", args_hash=args_hash)
+        return _json(502, ToolResult(decision="allow", reason=f"upstream error: {exc}", tool=name,
                                      audit_id=ev["id"], session_tainted=tainted))
     # The call row records the taint the decision was made under (before this call).
     ev = await record("allow", decision.reason, args_hash=args_hash)
@@ -760,11 +732,6 @@ class DecisionRequest(msgspec.Struct, forbid_unknown_fields=True):
     via: str | None = None
 
 
-# The admin key holder may only label a decision as coming from the admin UI, never as
-# 'slack:...' or 'timeout'. Auth0 subs look like 'auth0|64f0...' or 'google-oauth2|1234'.
-_VIA = re.compile(r"admin-ui:[A-Za-z0-9|._@-]{1,100}")
-
-
 @get("/approvals", tags=["approvals"], guards=[admin_guard], dependencies={"conn": Provide(provide_conn)},
      security=[{"AdminKey": []}])
 async def list_approvals(state: State, conn: asyncpg.Connection, status: str | None = "pending",
@@ -779,7 +746,7 @@ async def list_approvals(state: State, conn: asyncpg.Connection, status: str | N
 async def decide_approval(approval_id: uuid.UUID, data: DecisionRequest, state: State) -> Response:
     """Fallback (and Day 6 UI) path for Approve / Deny, same rules as the Slack buttons."""
     # The UI's server route takes `approver` and `via` from the Auth0 session, never from the browser.
-    if data.via is not None and not _VIA.fullmatch(data.via):
+    if data.via is not None and not VIA.fullmatch(data.via):
         return _json(400, {"error": "approval_not_applied", "reason": "via must look like 'admin-ui:<Auth0 sub>'"})
     try:
         row = await state.approvals.decide(approval_id, approve=data.approve,
@@ -806,7 +773,7 @@ async def slack_events(scope: dict, receive: Any, send: Any) -> None:
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.8.0",
+    version="0.9.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),
@@ -820,7 +787,8 @@ app = Litestar(
                     create_delegation, exchange_token, list_delegations, revoke_delegation, create_invoice,
                     list_invoices, list_agents,
                     disable_agent, enable_agent, list_tools, call_tool,
-                    poll_approval, cancel_approval, list_approvals, decide_approval, slack_events],
+                    poll_approval, cancel_approval, list_approvals, decide_approval, slack_events,
+                    *admin_api.ROUTES],
     lifespan=[lifespan],
     openapi_config=openapi_config,
 )

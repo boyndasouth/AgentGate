@@ -6,14 +6,17 @@ runtime. So at every boot this script SYNCS rather than seeds:
   1. waits for OpenFGA to be healthy,
   2. finds the store named "agentgate" (creates it on the first boot),
   3. reuses the latest authorization model if it equals policy/model.json, else writes it,
-  4. makes the seed tuples on tool:* and agent:* objects match policy/tuples.yaml exactly
-     (deletes stale or changed ones, writes missing ones) and never touches delegation:* tuples,
+  4. makes the tuples on tool:* and agent:* objects match policy/tuples.yaml PLUS what the admin
+     API recorded in Postgres (Day 12: agent owners, the `grants` and `tool_approvers` tables), so
+     a redeploy never deletes a grant made through the API; deletes stale or changed ones, writes
+     missing ones, and never touches delegation:* tuples,
   5. replays sanity checks (fails the boot if policy is wrong),
   6. prints `export FGA_STORE_ID=... FGA_MODEL_ID=...` for start.sh to eval.
 With the memory datastore (no FGA_DB_PASSWORD) the same steps simply start from empty.
 
 Only stdout carries the export lines; all logging goes to stderr.
-Stdlib + PyYAML only, same REST approach as scripts/load_store.py.
+Stdlib + PyYAML (+ asyncpg, already in the image, to read the API's tables), same REST approach
+as scripts/load_store.py.
 """
 
 from __future__ import annotations
@@ -68,6 +71,56 @@ def to_tuple_key(t: dict) -> dict:
             cond["context"] = t["condition"]["context"]
         key["condition"] = cond
     return key
+
+
+def api_tuples() -> list[dict]:
+    """Day 12: tuples the admin API owns, read from the broker's database. Empty on a database
+    the broker hasn't set up yet (first boot: the tables appear when the broker starts)."""
+    url = os.environ.get("DATABASE_URL", "")
+    if not url:
+        log("DATABASE_URL not set: syncing policy/tuples.yaml only")
+        return []
+    import asyncio
+
+    import asyncpg
+
+    async def read() -> list[dict]:
+        conn = await asyncpg.connect(url, timeout=30)
+        try:
+            out: list[dict] = []
+            queries = (
+                ("agents", "SELECT id, owner FROM agents ORDER BY id",
+                 lambda r: {"user": r["owner"], "relation": "owner", "object": f"agent:{r['id']}"}),
+                ("grants", "SELECT fga_tuple::text AS t FROM grants ORDER BY agent_id, tool, relation",
+                 lambda r: json.loads(r["t"])),
+                ("tool_approvers", "SELECT tool, user_id FROM tool_approvers ORDER BY tool, user_id",
+                 lambda r: {"user": r["user_id"], "relation": "approver", "object": f"tool:{r['tool']}"}),
+            )
+            for table, sql, make in queries:
+                try:
+                    out += [make(r) for r in await conn.fetch(sql)]
+                except asyncpg.UndefinedTableError:
+                    log(f"table {table} not created yet (first boot of this version): nothing from it")
+            return out
+        finally:
+            await conn.close()
+
+    return asyncio.run(read())
+
+
+def merge(seed: list[dict], api: list[dict]) -> list[dict]:
+    """policy/tuples.yaml wins when both name the same (user, relation, object): OpenFGA holds one
+    tuple per key, and the API refuses to write over a seed tuple, so this only happens when the
+    file later adds a tuple the API had already made."""
+    by_key = {(t["user"], t["relation"], t["object"]): t for t in seed}
+    for t in api:
+        k = (t["user"], t["relation"], t["object"])
+        if k in by_key:
+            if ident(by_key[k]) != ident(t):
+                log(f"{k[0]} {k[1]} {k[2]}: tuples.yaml and the API differ; tuples.yaml wins")
+            continue
+        by_key[k] = t
+    return list(by_key.values())
 
 
 def check(store: str, model: str, user: str, relation: str, obj: str, ctx: dict) -> bool:
@@ -165,9 +218,13 @@ def main() -> None:
 
     store, new_store = find_store()
     model, new_model = sync_model(store, model_json)
-    written, deleted, kept = sync_tuples(store, model, [to_tuple_key(t) for t in tuples])
+    seed = [to_tuple_key(t) for t in tuples]
+    api = api_tuples()
+    desired = merge(seed, api)
+    written, deleted, kept = sync_tuples(store, model, desired)
     log(f"store={store} ({'new' if new_store else 'existing'}) model={model} ({'new' if new_model else 'unchanged'}) "
-        f"seed tuples={len(tuples)} (+{written} -{deleted}) runtime tuples kept={kept}")
+        f"seed tuples={len(tuples)} + api tuples={len(desired) - len(seed)} (+{written} -{deleted}) "
+        f"runtime tuples kept={kept}")
 
     clean = {"amount": 40.0, "session_tainted": False, "host": "", "recipient_domain": "", "payee": "acct_acme_supplies", "invoice_matches": True}
     big = {"amount": 5000.0, "session_tainted": False, "host": "", "recipient_domain": "", "payee": "acct_acme_supplies", "invoice_matches": False}

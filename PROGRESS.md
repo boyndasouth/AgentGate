@@ -1,10 +1,42 @@
 # PROGRESS
 
-**Current day:** Day 11: tool registry as data (2026-11-16). `day11.patch` applied, pushed and deployed. **Day 11 is done.** First day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
-**Build status:** Days 0-10 are done and deployed (one-week MVP, known gaps G01-G05 closed, delegation chains, persistent OpenFGA). Day 11 moves the five demo tools out of Python and into a `tools` table; the gate's behaviour is unchanged for them.
-**Headline numbers after Day 11 (workspace, fresh DB):** **29/29 attacks stopped** (11 blocked, 18 escalated, 0 allowed), the same as Day 10, now with tools read from the database. Registry tests: 117/117. The registry adds about +0.1 ms p50 to an allowed call in the workspace (+3.0 ms before, +3.1 ms after). On Render: 29/29, no regressions. Latency on Shiwin's machine after Day 11: **+5.5 ms p50 / +6.8 ms p95** on an allowed call (Day 8: +5.2 / +6.5; the difference covers Days 9-11 together), payment path +7.0 / +8.6. LLM numbers are from Day 9.
+**Current day:** Day 12: forwarding to HTTP upstreams, credentials, agent and grant API (2026-11-16). `day12.patch` delivered against main at 4d0dd58; **not applied yet**. Day 11 is done and deployed. Second day of the Day 11+ phase (open the broker to any agent, see `DAY11_PLAN.md` in the project docs).
+**Build status:** Days 0-11 are done and deployed. Day 12 makes agents, grants, approvers and tools API data (no seed file needed), and adds `http` upstreams: an allowed call goes to a real API with a credential only the broker holds.
+**Headline numbers after Day 12 (workspace):** **33/33 attacks stopped** (14 blocked, 19 escalated, 0 allowed): the 29 from Day 11 unchanged plus R01-R04. Day 12 tests 190/190, registry tests 118/118. Allowed-call latency unchanged (main and the patch measured back to back in the workspace: +3.9 / +5.2 ms and +3.9 / +5.4 ms). Shiwin's machine after Day 11: +5.5 ms p50 / +6.8 ms p95. LLM numbers are from Day 9.
 
-**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 11 at d57ad02) · **Broker:** https://agentgate-broker.onrender.com (Day 11 patch is OpenAPI v0.8.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+**Repo:** github.com/boyndasouth/AgentGate (branch main, Day 11 at 4d0dd58) · **Broker:** https://agentgate-broker.onrender.com (Day 12 patch is OpenAPI v0.9.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled
+
+## Day 12 checklist
+- [x] **HTTP upstreams** (`broker/app/upstream.py`, `upstream.kind = "http"`): method, URL template with `{arg}` in the path only (one percent-encoded segment each), static headers, bearer or named-header auth, JSON or query arguments. HTTPS to public addresses only (resolved once, every address checked, connection pinned, certificate checked against the name); `UPSTREAM_PRIVATE_HOSTS` for local mocks. No redirects, timeout, size cap. Result `{status, ok, body}`; taints if `taints_session`.
+- [x] **Credentials:** env vars named by `credential_ref`, which must be `UPSTREAM_*`. Never in a response, audit row, registry row, Slack message, log line or error text; scrubbed from upstream answers (echo test). A row whose credential is missing is unusable.
+- [x] **Agent API:** `POST /agents` (row + owner tuple, `agent_registered`), `PATCH /agents/{id}` (display name, status = kill switch).
+- [x] **Grant API:** `GET/POST/DELETE /agents/{id}/grants` with `{tool, mode, params}`; six modes, params validated per mode; `grant_added` / `grant_removed`. `POST/DELETE /tools/{name}/approvers` (`approver_added` / `approver_removed`).
+- [x] **Tool API:** `POST/PATCH/DELETE /tools`; a row the gate can't fully understand is refused with the reason; changes audited as `registry_changed` with who made them. Egress, money and destructive tools default to `approval` grants; a direct grant must be named and comes back with a warning.
+- [x] **Seed sync keeps API grants:** `grants` and `tool_approvers` tables; `seed_fga.py` syncs `tuples.yaml` ∪ those rows; the broker writes missing API tuples back at startup. Seed tuples can't be changed through the API (409).
+- [x] **UI:** register an agent, add/remove grants (mode, params, risk class, warning before a direct grant on a risky tool), a Tools panel (register, switch on/off, approvers, problems). Writes go through server routes that add `X-Admin-Via` from the Auth0 session.
+- [x] **`mock-upstream`** in compose (echo, CRM, email, payments, redirect, slow, big).
+- [x] Tests: `broker/tests/test_day12.py` (190 checks) + `scripts/test_day12.ps1`; suite R01-R04; `eval/day12_check.py` for the Render redeploy check; UI smoke 46 checks.
+- [ ] Shiwin: apply `day12.patch`, run the local checks, push, Render suite 33/33, redeploy check on Render
+
+## Day 12: apply and deploy
+1. `git pull`, then `git apply --check day12.patch` and `git apply day12.patch`.
+2. `docker compose up -d --build broker mock-upstream` (new compose service; no new Python requirement). In `docker compose logs broker`, look for `tool registry: 5 tools (5 enabled)` and `api grants: 0 written back to OpenFGA`. No policy change, so no `load_store.py` run.
+3. `.\scripts\run_eval.ps1 suite` (expect 33/33: 14 blocked, 19 escalated), `.\scripts\test_day12.ps1` (expect 190/190; the seed-sync check prints "skipped" in the broker image, which has no PyYAML: that part is checked on Render in step 6), `.\scripts\test_registry.ps1` (expect 118/118), `.\scripts\demo_day2.ps1`.
+4. UI: `cd ui; npm run check; npm run build`; optional `python tests/mock_broker.py 8765` + `node tests/smoke.mjs` (46 checks). Then open the local UI: Agents → `+ Register agent`, `+ Grant`; Tools → `+ Register tool`.
+5. Commit and push. Render rebuilds the broker; the new tables are created at boot (nothing to run in the SQL editor). In the deploy log, after `15 sanity checks passed`, the seed line now reads `seed tuples=12 + api tuples=N`; on this first boot it also says the `grants` table isn't created yet. Vercel rebuilds the UI. Deploy order doesn't matter much: until Render is live, the new UI's forms get a 404/405 from the old broker, and the old UI never calls the new endpoints.
+6. `.\scripts\run_eval.ps1 suite -Target render` (33/33). Then the redeploy check: `py eval\day12_check.py setup --target render`, Render → Manual Deploy, wait until live, `py eval\day12_check.py verify --target render`, then `cleanup`. Commit `eval/results/*.json`.
+7. Optional, a real upstream on Render: add `UPSTREAM_<NAME>` in the dashboard (redeploys), register an `http` tool naming it, grant it. Plain http and private addresses are refused there by design.
+
+## Day 12: tested before delivery (workspace: Postgres 16 as a non-superuser with CREATEROLE, OpenFGA v1.22.1 in memory, mock upstream, broker at the patch)
+- Suite 33/33 (14 blocked, 19 escalated), no regressions in the 29 old cases, chain valid; the suite's tools and grants are gone afterwards.
+- `test_day12.py` 190/190, twice in a row. Unit: 29 kinds of bad http row and 7 bad credential refs are unusable (no secret in any reason), path segments (`..`, `.`, control characters refused; `/`, `?`, `#` encoded), scrubbing in four encodings, a name resolving to loopback refused, every grant mode's params. Live: the done check (register `support-bot` + `crm.update_ticket`, grant, call: allowed, forwarded with the credential, audited; credential in no response, audit row or registry row, also when the upstream echoes it or the agent sends its value; grant removed → the next call with the same token denied), redirect not followed, timeout, size cap, PATCH audited with who did it, a taint switch honoured, risky defaults, seed tuples refused, API approver used for an approval that then ran the upstream call.
+- Redeploy keeps API grants, three ways: `seed_fga.py` on the same store (grants kept), a Render boot simulation (fresh in-memory OpenFGA → `seed_fga.py` → broker; `api tuples=3`, `day12_check.py verify` passed), and a fresh store from `load_store.py --replace` followed by a broker restart ("2 written back").
+- First boot on a Day 11 database: the seed skips the missing tables and syncs tuples.yaml as before. `schema.sql` run three times as the non-superuser: no errors, tool versions unchanged.
+- TLS: a real HTTPS upstream through the pinned address answered 200; against a local TLS server with its own CA, the right name connected and a wrong name for the same address was refused (the sandbox's network proxy mints certificates per name, so this was tested offline).
+- Concurrency: 20 identical grant requests → one 201, 19 × 409, one audit row; 10 parallel removals → one 200.
+- Registry tests 118/118 (one Day 11 check updated: an http row is now refused for its real defect). Policy: 74/74 checks, 6/6 list_objects. Agents offline tests 14 passed. LLM self-test passed. UI: `svelte-check` 0 errors, `vite build` ok, smoke 46/46 (new routes, `X-Admin-Via` from the session, extra fields refused).
+- Latency: main and the patch back to back, allowed call +3.9 / +5.2 ms and +3.9 / +5.4 ms.
+- **Not tested:** Docker builds and compose (no Docker daemon here), the PowerShell scripts, Supabase and Render, Slack (an approval for an http tool posts the same summary as before), the UI in a browser (forms checked by svelte-check and the smoke test only; nothing looked at visually).
 
 ## Day 11 checklist
 - [x] **`tools` table** (`broker/schema.sql`): `name`, `description`, `args_schema` (JSON Schema 2020-12), `risk_class`, `context_map`, `taints_session`, `upstream`, `credential_ref`, `enabled`, `version`, `created_by`, `created_at`, `updated_at`. Column defaults are the safe ones: a new row is disabled and taints the session.
@@ -144,7 +176,11 @@
 - Supabase's SQL editor flags `$40` inside a string literal as an UPDATE without WHERE (its client-side parser trips on `$`); build the `$` with `chr(36)` instead.
 
 ## Open bugs / risks
-- Day 11: the registry has no write API yet (Day 12). Until then a tool is added or changed with SQL. Changes made while the broker is down are not audited: it only sees the difference between two loads.
+- Day 12: the broker holds real upstream credentials now. A broker compromise exposes them. One env var per upstream; rotating one is a redeploy.
+- Day 12: the admin key can register tools, grant them and approve calls. The UI records which Auth0 account acted; calls with the bare key are recorded as `admin-api`.
+- Day 12: `test_day12.ps1` can't run the seed-sync check inside the broker image (no PyYAML); it is covered by `eval/day12_check.py` on Render.
+- Day 12: the UI forms were not looked at in a browser before delivery.
+- Day 11: registry changes made while the broker is down are not audited: it only sees the difference between two loads. Changes made in SQL are audited without a name.
 - Day 11: one more query per tool call and per token request (the registry version). About +0.1 ms in the workspace; unmeasured on Render, where every query crosses the network to Supabase.
 - Day 11: `pattern` rules in a tool's schema run as Python regexes. Whoever can edit the registry is trusted not to write a slow one.
 - No known gap left in the suite. That doesn't mean no risk. Invoice matching trusts whoever creates invoices (the admin key, i.e. accounts payable). A fake invoice entered there passes, the same way it would in a real AP system.
@@ -163,4 +199,4 @@
   - Render cold start takes about 1 minute.
 
 ## Next step
-Day 12 (forwarding to HTTP upstreams, credentials, agent and grant API), in a new chat. Decided: upstream credentials are env vars named by `credential_ref`. Still open, for Day 13: Auth0 M2M or hashed per-agent API keys (check the Auth0 free-tier M2M quota first).
+Apply and deploy Day 12 (steps above). Then Day 13 (agents log in as themselves), in a new chat. Still open: Auth0 M2M or hashed per-agent API keys (check the Auth0 free-tier M2M quota first).

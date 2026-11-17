@@ -3,7 +3,8 @@
 A row says what a tool's arguments look like (`args_schema`, JSON Schema 2020-12), how risky it
 is (`risk_class`), which arguments the policy looks at (`context_map`), whether its output is
 untrusted (`taints_session`) and where the call goes (`upstream`). The gate reads all of that
-from here; `tools.py` only keeps the mock implementations behind `upstream.kind = "builtin"`.
+from here; `tools.py` only keeps the mock implementations behind `upstream.kind = "builtin"`,
+and `upstream.py` forwards `upstream.kind = "http"` rows to a real API (Day 12).
 
 Safe by default, at every step:
   - a row the broker can't fully understand is kept but marked with a `problem`, and every call
@@ -21,6 +22,7 @@ still leaves a trace.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import logging
 import math
@@ -35,7 +37,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from referencing import Registry as _RefRegistry
 
-from . import audit, tools as builtin
+from . import audit, tools as builtin, upstream as http_upstream
 
 log = logging.getLogger("agentgate.registry")
 
@@ -103,6 +105,7 @@ class Tool:
     defaults: Mapping[str, Any] = field(default_factory=dict)
     problem: str | None = None                       # why this row can't be used; None = fine
     validator: Any = field(default=None, repr=False, compare=False)
+    http: Any = field(default=None, repr=False, compare=False)   # upstream.HttpPlan for kind "http"
 
     @property
     def usable(self) -> bool:
@@ -123,6 +126,10 @@ class Tool:
                 "upstream": dict(self.upstream), "credential_ref": self.credential_ref,
                 "enabled": self.enabled, "version": self.version, "args_schema": dict(self.args_schema),
                 "problem": self.problem}
+
+    @property
+    def kind(self) -> str:
+        return str(self.upstream.get("kind", "?"))
 
 
 # ---------------------------------------------------------------- compiling a row
@@ -181,15 +188,21 @@ def _context_problem(context_map: Any, schema: dict) -> str | None:
     return None
 
 
-def _upstream_problem(name: str, upstream: Any) -> str | None:
+def _upstream_problem(name: str, upstream: Any, schema: dict, credential_ref: Any) -> tuple[str | None, Any]:
+    """(why the upstream can't be used or None, the compiled plan for an http upstream)."""
     if not isinstance(upstream, dict) or upstream.get("kind") not in UPSTREAM_KINDS:
-        return f"upstream.kind must be one of {', '.join(UPSTREAM_KINDS)}"
+        return f"upstream.kind must be one of {', '.join(UPSTREAM_KINDS)}", None
+    if credential_ref is not None and not isinstance(credential_ref, str):
+        return "credential_ref must be a string or null", None
+    if upstream["kind"] == "http":      # Day 12
+        plan, why = http_upstream.compile_http(upstream, schema, credential_ref)
+        return why, plan
     if upstream["kind"] != "builtin":
-        return f"upstream kind '{upstream['kind']}' is not supported by this broker version"
+        return f"upstream kind '{upstream['kind']}' is not supported by this broker version", None
     handler = upstream.get("handler", name)
     if not isinstance(handler, str) or handler not in builtin.BUILTINS:
-        return "upstream.handler names no built-in implementation"
-    return None
+        return "upstream.handler names no built-in implementation", None
+    return None, None
 
 
 def compile_row(row: Mapping[str, Any]) -> Tool:
@@ -197,14 +210,15 @@ def compile_row(row: Mapping[str, Any]) -> Tool:
     and the gate denies every call to it."""
     name = str(row.get("name", ""))
     schema, context_map, upstream = row.get("args_schema"), row.get("context_map"), row.get("upstream")
-    problem = None
+    problem, plan = None, None
     if not TOOL_NAME.fullmatch(name):
         problem = "name must match ^[a-z][a-z0-9_.]{1,63}$"
     elif row.get("risk_class") not in RISK_CLASSES:
         problem = f"risk_class must be one of {', '.join(RISK_CLASSES)}"
     else:
-        problem = (_schema_problem(schema) or _context_problem(context_map, schema)
-                   or _upstream_problem(name, upstream))
+        problem = _schema_problem(schema) or _context_problem(context_map, schema)
+        if problem is None:
+            problem, plan = _upstream_problem(name, upstream, schema, row.get("credential_ref"))
 
     validator, defaults, order = None, {}, ()
     if problem is None:
@@ -227,7 +241,8 @@ def compile_row(row: Mapping[str, Any]) -> Tool:
         upstream=dict(upstream) if isinstance(upstream, dict) else {},
         credential_ref=row.get("credential_ref"), enabled=bool(row.get("enabled", False)),
         version=int(row.get("version") or 1), args_schema=schema if isinstance(schema, dict) else {},
-        arg_order=order, defaults=defaults, problem=problem, validator=validator)
+        arg_order=order, defaults=defaults, problem=problem, validator=validator,
+        http=plan if problem is None else None)
 
 
 # ---------------------------------------------------------------- validating one call
@@ -290,6 +305,12 @@ def validate(tool: Tool, raw: Any) -> dict:
     args = dict(raw)
     for key, value in tool.defaults.items():
         args.setdefault(key, copy.deepcopy(value))
+    if tool.http is not None:
+        # Day 12: an argument that goes into the upstream URL must be usable as one path segment.
+        try:
+            http_upstream.check_path_args(tool.http, args)
+        except http_upstream.PathArgError as exc:
+            raise ArgsError(str(exc)) from None
     return args
 
 
@@ -378,9 +399,23 @@ def policy_inputs(tool: Tool, args: Mapping[str, Any]) -> PolicyInputs:
 
 
 async def run(tool: Tool, args: dict) -> dict:
-    """Call the tool's upstream. Day 11 knows `builtin` only (compile_row refuses the rest)."""
+    """Call the tool's upstream: a built-in mock, or (Day 12) a real HTTP API. For http the
+    result is {"status", "ok", "body"}; upstream.UpstreamError means there was no usable answer.
+    Other kinds never get here: compile_row marks them unusable."""
+    if tool.http is not None:
+        return await http_upstream.call(tool.http, tool.credential_ref, args)
     handler = builtin.BUILTINS[tool.upstream.get("handler", tool.name)]
     return await handler(args)
+
+
+def tx_id_of(result: Any) -> str:
+    """The payment reference in a tool's result, for the invoice record ('' if there is none)."""
+    if isinstance(result, dict):
+        body = result.get("body")
+        for holder in (result, body if isinstance(body, dict) else {}):
+            if isinstance(holder.get("tx_id"), str):
+                return holder["tx_id"][:200]
+    return ""
 
 
 # ---------------------------------------------------------------- the cache
@@ -434,7 +469,19 @@ class Registry:
                 return
             await self.load(conn, record_changes=self._version is not None)
 
-    async def load(self, conn: asyncpg.Connection, *, record_changes: bool = False) -> None:
+    @contextlib.asynccontextmanager
+    async def changing(self, conn: asyncpg.Connection, actor: str):
+        """Day 12: wrap a write to the `tools` table made through the admin API. The reload that
+        follows records the change with WHO made it. Holding the lock keeps a concurrent lookup
+        from recording the same change first, without the name."""
+        async with self._lock:
+            if self._version is None:
+                await self.load(conn)
+            yield
+            await self.load(conn, record_changes=True, actor=actor)
+
+    async def load(self, conn: asyncpg.Connection, *, record_changes: bool = False,
+                   actor: str | None = None) -> None:
         # The version is read BEFORE the rows. If a row changes in between, the stored number is
         # already stale and the next lookup loads again.
         version = await conn.fetchval("SELECT version FROM registry_state WHERE id")
@@ -460,7 +507,7 @@ class Registry:
                     changes.append((name, what))
         for name, what in changes:
             # A tool name from a row that failed the name check could be anything: don't repeat it.
-            await audit.append_event(conn, event_type="registry_changed", decision="info",
+            await audit.append_event(conn, event_type="registry_changed", decision="info", approver=actor,
                                      tool=name if TOOL_NAME.fullmatch(name) else None, reason=what[:300])
 
 

@@ -73,6 +73,9 @@ async def decide(
         if session_tainted and await fga.check(user, "can_request_approval", obj, {**context, "session_tainted": False}):
             # Only the taint stands in the way, and there's no approval path (read_web, G03).
             src = f" by {tainted_by}" if tainted_by else ""
+            if not host:    # Day 12: a clean-session-only grant on a tool that has no URL
+                return Decision("deny", f"policy: session tainted{src}; '{tool}' may only run in a clean "
+                                        "session and has no approval path")
             return Decision("deny", f"policy: session tainted{src}; host '{host or '?'}' is not on the "
                                     f"allowlist for '{tool}' in a tainted session")
         return Decision("deny", f"policy: agent '{agent_id}' has no grant on '{tool}'")
@@ -84,8 +87,13 @@ async def may_hold_scope(fga: FGAClient, agent_id: str, tool: str) -> bool:
     """Token issuance: the agent may hold a scope if any path to the tool exists
     (direct or via approval). Checked in the most permissive context; the per-call
     check later applies the real amount and taint."""
-    return await fga.check(
+    if await fga.check(
         f"agent:{agent_id}", "can_request_approval", f"tool:{tool}",
         {"amount": 0.0, "session_tainted": False, "host": "", "recipient_domain": "", "payee": "",
          "invoice_matches": False},
-    )
+    ):
+        return True
+    # Day 12: a direct grant whose condition can't hold in that empty context (an allowlisted
+    # recipient, a payee with an invoice) is still a path to the tool, even with no approval grant
+    # next to it. The stored tuple is the evidence; each call is still checked with real values.
+    return bool(await fga.read({"user": f"agent:{agent_id}", "relation": "direct_invoker", "object": f"tool:{tool}"}))

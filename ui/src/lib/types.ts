@@ -22,10 +22,33 @@ export interface AuditEvent {
 export interface Grant {
 	tool: string;
 	mode: 'direct' | 'approval';
+	/** Day 12: the API mode name (direct_if_untainted, approval, ...); null for a tuple no mode describes. */
+	grant_mode?: string | null;
 	condition?: string | null;
 	context?: Record<string, unknown>;
 	taints?: boolean;
+	risk_class?: RiskClass | null;
+	/** Day 12: 'api' = made through the admin API (removable here); 'seed' = policy/tuples.yaml. */
+	source?: 'api' | 'seed';
 	approvers?: string[];
+}
+
+export type RiskClass = 'read' | 'write' | 'egress' | 'money' | 'destructive';
+
+/** Day 12: a registry row as GET /tools returns it. */
+export interface Tool {
+	name: string;
+	description?: string;
+	risk_class: RiskClass;
+	taints_session: boolean;
+	context_map?: Record<string, string>;
+	upstream?: { kind?: string; method?: string; url?: string; handler?: string; [k: string]: unknown };
+	credential_ref?: string | null;
+	enabled: boolean;
+	version?: number;
+	args_schema?: Record<string, unknown>;
+	problem?: string | null;
+	approvers?: { user: string; source: 'api' | 'seed' }[] | null;
 }
 
 /** An active delegation this agent takes part in (Day 10). */

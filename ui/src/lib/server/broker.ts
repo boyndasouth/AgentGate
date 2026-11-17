@@ -21,7 +21,7 @@ export function demoConfigured(): boolean {
 
 export async function broker<T = unknown>(
 	path: string,
-	opts: { method?: string; body?: unknown; auth?: BrokerAuth; timeoutMs?: number } = {}
+	opts: { method?: string; body?: unknown; auth?: BrokerAuth; timeoutMs?: number; via?: string } = {}
 ): Promise<BrokerResponse<T>> {
 	const base = (env.BROKER_URL ?? '').replace(/\/+$/, '');
 	if (!base) return { status: 0, ok: false, data: null as T, error: 'BROKER_URL is not set' };
@@ -32,6 +32,8 @@ export async function broker<T = unknown>(
 	else if (auth === 'orchestrator') headers['X-Orchestrator-Key'] = env.AGENTGATE_ORCHESTRATOR_KEY ?? '';
 	else if (typeof auth === 'object') headers['Authorization'] = `Bearer ${auth.bearer}`;
 	if (opts.body !== undefined) headers['content-type'] = 'application/json';
+	// Day 12: who made an admin change, for the audit log ('admin-ui:<Auth0 sub>', see approvalVia).
+	if (opts.via && auth === 'admin') headers['X-Admin-Via'] = opts.via;
 
 	try {
 		const res = await fetch(base + path, {

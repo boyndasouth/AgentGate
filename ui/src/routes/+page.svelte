@@ -2,10 +2,11 @@
 	import { onMount } from 'svelte';
 	import { createClient, type RealtimeChannel, type SupabaseClient } from '@supabase/supabase-js';
 	import { api } from '$lib/api';
-	import type { Agent, Approval, AuditEvent, FeedMode } from '$lib/types';
+	import type { Agent, Approval, AuditEvent, FeedMode, Tool } from '$lib/types';
 	import AgentsPanel from '$lib/components/AgentsPanel.svelte';
 	import ApprovalsPanel from '$lib/components/ApprovalsPanel.svelte';
 	import FeedPanel from '$lib/components/FeedPanel.svelte';
+	import ToolsPanel from '$lib/components/ToolsPanel.svelte';
 	import VerifyPanel from '$lib/components/VerifyPanel.svelte';
 	import DemoPanel from '$lib/components/DemoPanel.svelte';
 
@@ -15,6 +16,8 @@
 
 	let agents = $state<Agent[]>([]);
 	let agentsError = $state<string | null>(null);
+	let tools = $state<Tool[]>([]);
+	let toolsError = $state<string | null>(null);
 	let approvals = $state<Approval[]>([]);
 	let approvalsError = $state<string | null>(null);
 	let events = $state<AuditEvent[]>([]);
@@ -49,6 +52,20 @@
 		} else agentsError = r.error ?? 'failed';
 	}
 
+	// Day 12: the tool registry (risk classes for the grant form, approvers, on/off).
+	async function loadTools() {
+		const r = await api<Tool[]>('/api/tools');
+		if (r.ok) {
+			tools = r.data;
+			toolsError = null;
+		} else toolsError = r.error ?? 'failed';
+	}
+
+	function loadRegistry() {
+		loadAgents();
+		loadTools();
+	}
+
 	async function loadApprovals() {
 		const r = await api<Approval[]>('/api/approvals');
 		if (r.ok) {
@@ -74,6 +91,9 @@
 		// Keep the other panels in step with what the feed just showed.
 		if (added.some((e) => e.decision === 'escalate' || e.event_type.startsWith('approval'))) loadApprovals();
 		if (added.some((e) => e.event_type === 'agent_disabled' || e.event_type === 'agent_enabled')) loadAgents();
+		// Day 12: registry, grant and agent changes, made here, by another admin or in SQL
+		const REGISTRY_EVENTS = ['registry_changed', 'grant_added', 'grant_removed', 'approver_added', 'approver_removed', 'agent_registered', 'agent_updated'];
+		if (added.some((e) => REGISTRY_EVENTS.includes(e.event_type))) loadRegistry();
 	}
 
 	async function pollEvents(flash = true) {
@@ -95,7 +115,7 @@
 	}
 
 	function refreshAll() {
-		loadAgents();
+		loadRegistry();
 		loadApprovals();
 		pollEvents();
 	}
@@ -119,7 +139,7 @@
 
 		(async () => {
 			await wake(); // first request may take ~1 min on Render's free tier
-			await Promise.all([loadAgents(), loadApprovals(), pollEvents(false)]);
+			await Promise.all([loadAgents(), loadTools(), loadApprovals(), pollEvents(false)]);
 
 			const rt = data.realtime;
 			const claims = rt?.token ? decodeClaims(rt.token) : null;
@@ -208,7 +228,7 @@
 
 	<main class="grid">
 		<div class="col-left">
-			<AgentsPanel {agents} error={agentsError} onchange={loadAgents} />
+			<AgentsPanel {agents} {tools} error={agentsError} onchange={loadRegistry} />
 			<ApprovalsPanel
 				{approvals}
 				error={approvalsError}
@@ -219,6 +239,7 @@
 					pollEvents();
 				}}
 			/>
+			<ToolsPanel {tools} error={toolsError} onchange={loadRegistry} />
 			<VerifyPanel onresult={(id) => (brokenId = id)} />
 		</div>
 		<div class="col-right">

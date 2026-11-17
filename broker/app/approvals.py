@@ -260,7 +260,7 @@ class ApprovalService:
                 settled = bool(inv) and await invoices.settle(conn, inv, ctx.payee, ctx.amount)
                 result = await registry.run(tool, args)
                 if settled:
-                    await invoices.record_tx(conn, inv, result.get("tx_id", ""))
+                    await invoices.record_tx(conn, inv, registry.tx_id_of(result))
         except Exception as exc:   # noqa: BLE001 - report tool failure to the agent, keep the chain going
             return {"error": str(exc)}, f"tool failed: {exc}"
         # Day 5: an approved call to a tainting tool still taints the session before the
@@ -270,7 +270,8 @@ class ApprovalService:
             await taint.mark(conn, session_id=str(row["session_id"]), tool=row["tool"],
                              agent_id=row["agent_id"], task_id=str(row["task_id"]),
                              via=f" (approved call {row['id']})")
-        return result, f"tool ran: {result.get('status', 'ok')}"
+        return result, f"tool ran: {result.get('status', 'ok')}" + (
+            "" if tool.http is None else f" from {tool.http.origin}")
 
     async def _expire(self, conn: asyncpg.Connection, row: dict, *, via: str, reason: str) -> dict:
         expired = _row(await conn.fetchrow(

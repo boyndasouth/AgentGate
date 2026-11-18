@@ -24,17 +24,18 @@ from litestar.openapi.spec import Components, SecurityScheme
 
 from . import admin_api, agent_login, audit, delegation, grants, invoices, registry, taint, upstream
 from .deps import VIA, _json, admin_guard, orchestrator_guard, provide_conn
-from .agent_login import Forged, Rejected, Unavailable
 from .approvals import ApprovalError, ApprovalService, Approver, admin_view, agent_view
 from .config import load_settings
 from .db import create_pool
-from .decision import decide, may_hold_scope
+from .gate import ToolResult, run_gate
+from .minting import TokenResponse, login_agent, mint
 from .fga import FGAClient, PolicyEngineError
 from .keys import SigningKey
 from .slack import SLACK_EVENTS_PATH, SlackApprovals
 from .delegation import DelegationError
 from .tokens import TokenError, check_not_revoked, decode_token, issue_token
-from .registry import REGISTRY, ArgsError, ContextError
+from .registry import REGISTRY
+from .mcp_gateway import GATEWAY
 
 log = logging.getLogger("agentgate")
 
@@ -86,7 +87,8 @@ async def lifespan(app: Litestar) -> AsyncGenerator[None, None]:
         swept = await approvals.expire_overdue(conn)   # approvals left pending by a restart
     log.info("AgentGate up. kid=%s slack=%s expired_on_boot=%d", app.state.key.kid, settings.slack_mode, swept)
     try:
-        yield
+        async with GATEWAY.run(app.state):     # Day 14: the MCP gateway at /mcp
+            yield
     finally:
         if app.state.slack is not None:
             await app.state.slack.stop()
@@ -113,24 +115,6 @@ class AgentLoginRequest(msgspec.Struct, forbid_unknown_fields=True):
     task: str
     scopes: list[str]
     session_id: str | None = None   # omit to start a new session; or one this agent may join
-
-
-class TokenResponse(msgspec.Struct):
-    access_token: str
-    token_type: str
-    expires_in: int
-    expires_at: str
-    agent_id: str
-    session_id: str
-    task_id: str
-    jti: str
-    scopes: list[str]
-    session_tainted: bool = False     # Day 5: a reused session keeps its taint
-    tainted_by: str | None = None
-    principal: str | None = None      # Day 10, exchanged tokens: whose access this token uses
-    actors: list[str] | None = None   # Day 10: calling agent first, then earlier hops
-    delegation_ids: list[str] | None = None
-    login: str | None = None          # Day 13: 'auth0' when the agent logged in as itself
 
 
 class DelegationRequest(msgspec.Struct, forbid_unknown_fields=True):
@@ -170,18 +154,6 @@ class KillSwitchRequest(msgspec.Struct, forbid_unknown_fields=True):
 
 class ToolCall(msgspec.Struct, forbid_unknown_fields=True):
     args: dict[str, Any] = {}
-
-
-class ToolResult(msgspec.Struct, omit_defaults=True):
-    decision: str                    # 'allow' | 'escalate' | 'deny'
-    reason: str
-    tool: str
-    audit_id: int
-    session_tainted: bool | None = None
-    result: dict[str, Any] | None = None
-    approval_id: str | None = None   # escalate only
-    status: str | None = None        # escalate: 'pending'
-    expires_at: str | None = None    # escalate: when the approval times out (counts as deny)
 
 
 # ---------------------------------------------------------------- public
@@ -247,99 +219,11 @@ async def audit_events(conn: asyncpg.Connection, session_id: str | None = None, 
 async def _mint(state: State, conn: asyncpg.Connection, *, agent_id: str, task: str, scopes: list[str],
                 session_id: str | None, login: str | None) -> Response:
     """Shared by POST /tokens (the orchestrator names the agent) and POST /tokens/agent (Day 13:
-    the agent proved who it is, `login` = 'auth0'). Same scope and registry checks for both."""
-    settings, fga = state.settings, state.fga
-    scopes = sorted(set(scopes))
-
-    async def refuse(status: int, reason: str) -> Response:
-        # Day 5: if the request names an existing session, the denial carries its taint too.
-        st = await taint.load(conn, session_id) if session_id else None
-        ev = await audit.append_event(conn, event_type="token_denied", decision="deny", reason=reason,
-                                      agent_id=agent_id, session_id=session_id,
-                                      session_tainted=st.tainted if st else None)
-        return _json(status, {"error": "token_denied", "reason": reason, "audit_id": ev["id"]})
-
-    agent = await conn.fetchrow("SELECT id, status, owner, auth0_client_id FROM agents WHERE id = $1", agent_id)
-    if agent is None:
-        return await refuse(404, f"unknown agent '{agent_id}'")
-    if agent["status"] != "active":
-        return await refuse(403, f"agent '{agent_id}' is disabled (kill switch)")
-    if login is None and agent["auth0_client_id"]:
-        # Day 13: once an agent has its own login, nobody else can speak for it.
-        return await refuse(403, f"agent '{agent_id}' logs in as itself (POST /tokens/agent); "
-                                 "the orchestrator key can't mint its tokens")
-    if not scopes:
-        return await refuse(400, "request at least one scope")
-    if len(scopes) > 64 or len(task) > 2000:
-        return await refuse(400, "too many scopes or a task description over 2000 characters")
-    await REGISTRY.sync(conn)
-    unknown = [s for s in scopes if REGISTRY.peek(s) is None]
-    if unknown:
-        return await refuse(400, f"unknown tool scope(s): {', '.join(u[:64] for u in unknown[:10])}")
-    unusable = [s for s in scopes if not REGISTRY.peek(s).usable]
-    if unusable:     # Day 11: no token for a tool that is switched off or misconfigured
-        return await refuse(400, f"disabled or misconfigured tool scope(s): {', '.join(unusable)}")
-
-    try:
-        not_granted = [s for s in scopes if not await may_hold_scope(fga, agent_id, s)]
-    except PolicyEngineError as exc:
-        return await refuse(503, f"policy engine unavailable, failing closed: {exc}")
-    if not_granted:
-        return await refuse(403, f"agent '{agent_id}' may not hold: {', '.join(not_granted)}")
-
-    # Session: reuse a session (taint and all), or start a new one.
-    carried = None
-    if login is not None:
-        # Day 13: taint follows the agent. With the orchestrator, a trusted party decides when a
-        # run (and its session) ends. An agent that logs in itself could otherwise read a
-        # poisoned page and simply ask for a fresh, clean session.
-        carried = await conn.fetchrow(
-            """SELECT s.id, s.tainted_by FROM tokens t JOIN sessions s ON s.id = t.session_id
-               WHERE t.agent_id = $1 AND t.expires_at > now() AND s.tainted
-               ORDER BY s.tainted_at DESC NULLS LAST LIMIT 1""", agent_id)
-    if session_id:
-        try:
-            sid = uuid.UUID(session_id)
-        except ValueError:
-            return await refuse(400, "session_id is not a UUID")
-        row = await conn.fetchrow("SELECT owner FROM sessions WHERE id = $1", sid)
-        if login is not None and (row is None or row["owner"] is None or row["owner"] != agent["owner"]):
-            # Same answer for "doesn't exist" and "not yours", so session ids can't be probed.
-            return await refuse(403, "unknown session, or not one this agent may join "
-                                     "(an agent can only join a session started by an agent of the same owner)")
-        if row is None:
-            return await refuse(404, "unknown session_id")
-    else:
-        sid = uuid.uuid4()
-        await conn.execute("INSERT INTO sessions (id, owner, created_by) VALUES ($1, $2, $3)", sid,
-                           agent["owner"] if login is not None else None, agent_id if login is not None else None)
-    if carried is not None and carried["id"] != sid:
-        source = carried["tainted_by"] or "an earlier session"
-        await taint.mark(conn, session_id=str(sid), tool=source, agent_id=agent_id,
-                         via=f" (carried over: the agent still holds a token in tainted session {str(carried['id'])[:8]})")
-    st = await taint.load(conn, str(sid))
-
-    task_id = str(uuid.uuid4())
-    token, claims = issue_token(state.key, settings, agent_id=agent_id, session_id=str(sid),
-                                task_id=task_id, scopes=scopes)
-    await conn.execute(
-        """INSERT INTO tokens (jti, agent_id, session_id, task_id, task, scopes, issued_at, expires_at, login)
-           VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7), to_timestamp($8), $9)""",
-        uuid.UUID(claims["jti"]), agent_id, sid, uuid.UUID(task_id), task, scopes,
-        claims["iat"], claims["exp"], login,
-    )
-    await audit.append_event(conn, event_type="token_issued", decision="info",
-                             reason=f"scopes: {' '.join(scopes)}; task: {task[:120]}"
-                                    + (f"; login: {login}" if login else ""),
-                             agent_id=agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"],
-                             session_tainted=st.tainted)
-    body = TokenResponse(
-        access_token=token, token_type="Bearer", expires_in=settings.token_ttl_seconds,
-        expires_at=datetime.fromtimestamp(claims["exp"], tz=timezone.utc).isoformat(),
-        agent_id=agent_id, session_id=str(sid), task_id=task_id, jti=claims["jti"], scopes=scopes,
-        session_tainted=st.tainted, tainted_by=st.tainted_by, login=login,
-    )
-    return _json(201, body)
+    the agent proved who it is, `login` = 'auth0'). Day 14: the logic lives in minting.mint, shared
+    with the MCP gateway; this only turns its (status, body) into a response."""
+    status, body = await mint(state, conn, agent_id=agent_id, task=task, scopes=scopes,
+                              session_id=session_id, login=login)
+    return _json(status, body)
 
 
 @post("/tokens", tags=["tokens"], guards=[orchestrator_guard], status_code=201,
@@ -359,32 +243,10 @@ async def agent_token(data: AgentLoginRequest, request: Request, state: State,
     client credentials grant (audience = this API). The broker checks it against Auth0's keys,
     finds the agent mapped to that Auth0 client and mints the usual short-lived AgentGate token.
     Cache the Auth0 token until it expires: this endpoint can be called with it again and again."""
-    service = state.agent_login
-    if service is None:
-        return _json(503, {"error": "agent_login_not_configured",
-                           "reason": "this broker has no identity provider configured for agent login"})
-    try:
-        login = await service.verify(agent_login.bearer_of(request.headers.get("authorization")))
-    except Forged as exc:
-        # Not provably from the issuer: refused and logged, but kept out of the audit chain
-        # (like a bad signature on an agent token), so junk can't flood it.
-        log.warning("agent login refused: %s", exc.reason)
-        return _json(401, {"error": "login_refused", "reason": exc.reason})
-    except Unavailable as exc:
-        return _json(503, {"error": "identity_provider_unavailable", "reason": exc.reason})
-    except Rejected as exc:
-        agent_id = (await conn.fetchval("SELECT id FROM agents WHERE auth0_client_id = $1", exc.client_id)
-                    if exc.client_id else None)
-        ev = await audit.append_event(
-            conn, event_type="token_denied", decision="deny", agent_id=agent_id,
-            reason=f"agent login: {exc.reason}" + (f" (Auth0 client {exc.client_id})" if exc.client_id else ""))
-        return _json(401, {"error": "login_refused", "reason": exc.reason, "audit_id": ev["id"]})
-
-    agent_id = await conn.fetchval("SELECT id FROM agents WHERE auth0_client_id = $1", login.client_id)
-    if agent_id is None:
-        reason = f"Auth0 client {login.client_id} is not mapped to an agent"
-        ev = await audit.append_event(conn, event_type="token_denied", decision="deny", reason=f"agent login: {reason}")
-        return _json(403, {"error": "login_refused", "reason": reason, "audit_id": ev["id"]})
+    who, refused = await login_agent(state, conn, request.headers.get("authorization"))
+    if refused is not None:
+        return _json(*refused)
+    agent_id = who[0]
     return await _mint(state, conn, agent_id=agent_id, task=data.task, scopes=data.scopes,
                        session_id=data.session_id, login="auth0")
 
@@ -618,145 +480,9 @@ async def call_tool(name: str, data: ToolCall, request: Request, state: State,
     except TokenError as exc:
         return _json(401, {"decision": "deny", "reason": str(exc)})
 
-    # 2. Session taint (Day 5): set by the gate, never by the agent. Loaded first so that
-    #    every audit row for this call, even an early deny, records the taint it was judged under.
-    st = await taint.load(conn, claims.session_id)
-    # Day 10: a delegated call also carries the taint of every session its grants came from.
-    st = await delegation.effective_taint(conn, claims, st)
-    tainted = st.tainted if st else None
-
-    async def record(decision: str, reason: str, *, args_hash: str | None = None) -> dict:
-        return await audit.append_event(
-            conn, event_type="tool_call", decision=decision, reason=reason, agent_id=claims.agent_id,
-            session_id=claims.session_id, task_id=claims.task_id, jti=claims.jti, tool=name,
-            args_hash=args_hash, session_tainted=tainted)
-
-    # 3. Revocation / kill switch. The token is genuine, so this attempt is audited.
-    try:
-        await check_not_revoked(conn, claims)
-    except TokenError as exc:
-        ev = await record("deny", str(exc))
-        return _json(401, {"decision": "deny", "reason": str(exc), "tool": name, "audit_id": ev["id"],
-                           "session_tainted": tainted})
-
-    # 4. Known session, known tool, valid arguments.
-    if st is None:
-        ev = await record("deny", "unknown session")
-        return _json(401, ToolResult(decision="deny", reason="unknown session", tool=name, audit_id=ev["id"]))
-    #    Day 11: the tool comes from the registry table. Unknown, disabled and misconfigured
-    #    tools are refused here, before OpenFGA is asked.
-    tool = await REGISTRY.get(conn, name) if registry.TOOL_NAME.fullmatch(name) else None
-    if tool is None:
-        ev = await record("deny", f"unknown tool '{name[:64]}'")
-        return _json(404, ToolResult(decision="deny", reason=f"unknown tool '{name[:64]}'", tool=name,
-                                     audit_id=ev["id"], session_tainted=tainted))
-    args_hash = audit.args_digest(settings.args_hmac_key, data.args)
-    why = tool.unavailable_reason()
-    if why is not None:
-        ev = await record("deny", why, args_hash=args_hash)
-        return _json(403, ToolResult(decision="deny", reason=why, tool=name, audit_id=ev["id"],
-                                     session_tainted=tainted))
-    try:
-        args = registry.validate(tool, data.args)
-    except ArgsError as exc:
-        ev = await record("deny", f"invalid arguments: {exc}", args_hash=args_hash)
-        return _json(422, ToolResult(decision="deny", reason=f"invalid arguments: {exc}", tool=name,
-                                     audit_id=ev["id"], session_tainted=tainted))
-    try:
-        ctx = registry.policy_inputs(tool, args)     # built from the row's context_map
-    except ContextError as exc:
-        why = f"can't build the policy context, failing closed: {exc}"
-        ev = await record("deny", why, args_hash=args_hash)
-        return _json(403, ToolResult(decision="deny", reason=why, tool=name, audit_id=ev["id"],
-                                     session_tainted=tainted))
-
-    # 4b. Day 10: a delegated token works only while every hop is live and covers this tool.
-    acting = ""
-    if claims.delegated:
-        acting = f" (as agent:{claims.principal} via delegation {' -> '.join(d[:8] for d in claims.delegation_ids)})"
-        if name in claims.scopes:
-            try:
-                why = await delegation.live(conn, state.fga, claims, name)
-            except PolicyEngineError as exc:
-                why = f"policy engine unavailable, failing closed: {exc}"
-                ev = await record("deny", why, args_hash=args_hash)
-                return _json(503, ToolResult(decision="deny", reason=why, tool=name, audit_id=ev["id"],
-                                             session_tainted=tainted))
-            if why is not None:
-                ev = await record("deny", f"{why}{acting}", args_hash=args_hash)
-                return _json(403, ToolResult(decision="deny", reason=why, tool=name, audit_id=ev["id"],
-                                             session_tainted=tainted))
-
-    # 4c. Day 10 (G05): does the payment match an open invoice? OpenFGA gets the answer as context.
-    inv = invoices.Match(False)
-    if ctx.invoice_id is not None:
-        inv = await invoices.match(conn, ctx.invoice_id, ctx.payee, ctx.amount)
-
-    # 5. Policy decision, with the session's taint as OpenFGA context. A delegated call is judged
-    #    AS its principal: the delegate can never do more than the agent it acts for.
-    decision = await decide(state.fga, agent_id=claims.principal, tool=name, token_scopes=claims.scopes,
-                            amount=ctx.amount, session_tainted=st.tainted,
-                            tainted_by=st.tainted_by, host=ctx.host,
-                            recipient_domain=ctx.recipient_domain, payee=ctx.payee,
-                            allowlist_reason=ctx.allowlist_reason,
-                            invoice_matches=inv.ok, invoice_reason=inv.why)
-    if acting:
-        decision = type(decision)(decision.outcome, decision.reason + acting, decision.policy_error)
-
-    if decision.outcome == "deny":
-        ev = await record("deny", decision.reason, args_hash=args_hash)
-        return _json(503 if decision.policy_error else 403,
-                     ToolResult(decision="deny", reason=decision.reason, tool=name, audit_id=ev["id"],
-                                session_tainted=tainted))
-
-    if decision.outcome == "escalate":
-        # Raw args are kept on the approval row only while pending: the broker replays the
-        # call itself on Approve, so the agent never re-sends it.
-        row = await state.approvals.create(
-            conn, agent_id=claims.agent_id, session_id=claims.session_id, task_id=claims.task_id,
-            tool=name, args=data.args, args_hash=args_hash, reason=decision.reason, session_tainted=tainted,
-            principal=claims.principal if claims.delegated else None,
-            delegation_ids=list(claims.delegation_ids) or None)
-        ev = await record("escalate", f"{decision.reason}; approval {row['id']}", args_hash=args_hash)
-        await state.approvals.announce(conn, row, ev["id"])
-        return _json(202, ToolResult(decision="escalate", reason=decision.reason, tool=name,
-                                     audit_id=ev["id"], approval_id=str(row["id"]), status="pending",
-                                     expires_at=row["expires_at"].isoformat(), session_tainted=tainted))
-
-    # 6. Allow: run the tool (the broker, not the agent, holds any real API keys).
-    #    Day 10: a payment allowed against an invoice settles it in the same transaction, so two
-    #    calls racing to pay the same invoice can't both go through.
-    #    Day 12: an http upstream is called with the credential the broker holds; the agent gets
-    #    the upstream's status and body, scrubbed of that credential.
-    try:
-        async with conn.transaction():
-            if inv.ok and not await invoices.settle(conn, ctx.invoice_id, ctx.payee, ctx.amount):
-                raise ValueError("the invoice was paid by another call a moment ago")
-            result = await registry.run(tool, args)
-            if inv.ok:
-                await invoices.record_tx(conn, ctx.invoice_id, registry.tx_id_of(result))
-    except ValueError as exc:
-        ev = await record("allow", f"{decision.reason}; tool rejected input: {exc}", args_hash=args_hash)
-        return _json(400, ToolResult(decision="allow", reason=f"tool error: {exc}", tool=name,
-                                     audit_id=ev["id"], session_tainted=tainted))
-    except upstream.UpstreamError as exc:
-        # Allowed, but no usable answer. Nothing from the upstream reaches the agent, so the
-        # session isn't tainted by it. The text is written by the broker, never copied.
-        ev = await record("allow", f"{decision.reason}; upstream error: {exc}", args_hash=args_hash)
-        return _json(502, ToolResult(decision="allow", reason=f"upstream error: {exc}", tool=name,
-                                     audit_id=ev["id"], session_tainted=tainted))
-    # The call row records the taint the decision was made under (before this call).
-    ev = await record("allow", decision.reason, args_hash=args_hash)
-
-    # 7. Day 5: untrusted content taints the session BEFORE the agent sees it. If marking
-    #    fails, this raises and the content is never returned (fail closed).
-    if tool.taints:
-        await taint.mark(conn, session_id=claims.session_id, tool=name, agent_id=claims.agent_id,
-                         task_id=claims.task_id, jti=claims.jti)
-        tainted = True
-    # Response: session_tainted is the session's state AFTER this call.
-    return _json(200, ToolResult(decision="allow", reason=decision.reason, tool=name, audit_id=ev["id"],
-                                 result=result, session_tainted=tainted))
+    # 2-7. Day 14: everything after authentication is the gate (gate.py), shared with the MCP gateway.
+    status, body = await run_gate(state, conn, claims, name, data.args)
+    return _json(status, body)
 
 
 # ---------------------------------------------------------------- approvals (Day 4)
@@ -861,11 +587,17 @@ async def slack_events(scope: dict, receive: Any, send: Any) -> None:
     await slack.http_handler(scope, receive, send)
 
 
+@asgi("/mcp", copy_scope=True, include_in_schema=False)
+async def mcp_endpoint(scope: Any, receive: Any, send: Any) -> None:
+    """Day 14: MCP gateway (Streamable HTTP). Auth0 M2M bearer token; see mcp_gateway.py."""
+    await GATEWAY.asgi(scope, receive, send)
+
+
 # ---------------------------------------------------------------- app
 
 openapi_config = OpenAPIConfig(
     title="AgentGate",
-    version="0.10.0",
+    version="0.11.0",
     description="Identity and permissions broker for AI agents.",
     components=Components(security_schemes={
         "BearerAuth": SecurityScheme(type="http", scheme="bearer", bearer_format="JWT"),
@@ -881,7 +613,7 @@ app = Litestar(
                     create_delegation, exchange_token, list_delegations, revoke_delegation, create_invoice,
                     list_invoices, list_agents,
                     disable_agent, enable_agent, list_tools, call_tool,
-                    poll_approval, cancel_approval, list_approvals, decide_approval, slack_events,
+                    poll_approval, cancel_approval, list_approvals, decide_approval, slack_events, mcp_endpoint,
                     *admin_api.ROUTES],
     lifespan=[lifespan],
     openapi_config=openapi_config,

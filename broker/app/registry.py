@@ -4,7 +4,8 @@ A row says what a tool's arguments look like (`args_schema`, JSON Schema 2020-12
 is (`risk_class`), which arguments the policy looks at (`context_map`), whether its output is
 untrusted (`taints_session`) and where the call goes (`upstream`). The gate reads all of that
 from here; `tools.py` only keeps the mock implementations behind `upstream.kind = "builtin"`,
-and `upstream.py` forwards `upstream.kind = "http"` rows to a real API (Day 12).
+`upstream.py` forwards `upstream.kind = "http"` rows to a real API (Day 12) and `mcp_upstream.py`
+forwards `upstream.kind = "mcp"` rows to a remote MCP server (Day 14).
 
 Safe by default, at every step:
   - a row the broker can't fully understand is kept but marked with a `problem`, and every call
@@ -37,7 +38,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from referencing import Registry as _RefRegistry
 
-from . import audit, tools as builtin, upstream as http_upstream
+from . import audit, mcp_upstream, tools as builtin, upstream as http_upstream
 
 log = logging.getLogger("agentgate.registry")
 
@@ -106,6 +107,7 @@ class Tool:
     problem: str | None = None                       # why this row can't be used; None = fine
     validator: Any = field(default=None, repr=False, compare=False)
     http: Any = field(default=None, repr=False, compare=False)   # upstream.HttpPlan for kind "http"
+    mcp: Any = field(default=None, repr=False, compare=False)    # mcp_upstream.McpPlan for kind "mcp" (Day 14)
 
     @property
     def usable(self) -> bool:
@@ -197,6 +199,9 @@ def _upstream_problem(name: str, upstream: Any, schema: dict, credential_ref: An
     if upstream["kind"] == "http":      # Day 12
         plan, why = http_upstream.compile_http(upstream, schema, credential_ref)
         return why, plan
+    if upstream["kind"] == "mcp":       # Day 14
+        plan, why = mcp_upstream.compile_mcp(upstream, schema, credential_ref)
+        return why, plan
     if upstream["kind"] != "builtin":
         return f"upstream kind '{upstream['kind']}' is not supported by this broker version", None
     handler = upstream.get("handler", name)
@@ -242,7 +247,8 @@ def compile_row(row: Mapping[str, Any]) -> Tool:
         credential_ref=row.get("credential_ref"), enabled=bool(row.get("enabled", False)),
         version=int(row.get("version") or 1), args_schema=schema if isinstance(schema, dict) else {},
         arg_order=order, defaults=defaults, problem=problem, validator=validator,
-        http=plan if problem is None else None)
+        http=plan if problem is None and isinstance(plan, http_upstream.HttpPlan) else None,
+        mcp=plan if problem is None and isinstance(plan, mcp_upstream.McpPlan) else None)
 
 
 # ---------------------------------------------------------------- validating one call
@@ -404,6 +410,8 @@ async def run(tool: Tool, args: dict) -> dict:
     Other kinds never get here: compile_row marks them unusable."""
     if tool.http is not None:
         return await http_upstream.call(tool.http, tool.credential_ref, args)
+    if tool.mcp is not None:     # Day 14: {"ok", "body"} from the remote MCP server
+        return await mcp_upstream.call(tool.mcp, tool.credential_ref, args)
     handler = builtin.BUILTINS[tool.upstream.get("handler", tool.name)]
     return await handler(args)
 

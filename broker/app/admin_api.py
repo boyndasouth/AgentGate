@@ -20,6 +20,7 @@ row only names the env var that holds it.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
@@ -29,7 +30,8 @@ from litestar import Request, Response, delete, get, patch, post
 from litestar.datastructures import State
 from litestar.di import Provide
 
-from . import agent_login, audit, delegation, grants, registry
+from . import agent_login, audit, delegation, grants, mcp_upstream, registry
+from .upstream import UpstreamError
 from .deps import BadVia, _json, actor_of, admin_guard, provide_conn
 from .fga import PolicyEngineError
 from .grants import GrantError
@@ -75,6 +77,16 @@ class ToolCreate(msgspec.Struct, forbid_unknown_fields=True):
     taints_session: bool = True         # safe default: its output is treated as untrusted
     credential_ref: str | None = None
     enabled: bool = False               # safe default: off until someone turns it on
+
+
+class McpImport(msgspec.Struct, forbid_unknown_fields=True):
+    """Day 14: import the tools of a remote MCP server as registry rows."""
+    prefix: str                         # local names become '<prefix>.<remote name>'
+    url: str
+    credential_ref: str | None = None
+    auth: dict[str, Any] | None = None
+    only: list[str] | None = None       # remote tool names to import; default: all (at most 100)
+    timeout_seconds: float | None = None
 
 
 class ToolPatch(msgspec.Struct, forbid_unknown_fields=True):
@@ -322,6 +334,72 @@ async def register_tool(data: ToolCreate, request: Request, conn: asyncpg.Connec
     return _json(201, REGISTRY.peek(data.name).public())
 
 
+_PREFIX = re.compile(r"[a-z][a-z0-9_]{0,19}")
+
+
+def _local_name(prefix: str, remote: str) -> str:
+    return f"{prefix}.{re.sub(r'[^a-z0-9_.]', '_', remote.lower())}"[:64]
+
+
+@post("/mcp-upstreams/import", tags=["tools"], status_code=200, request_max_body_size=registry.MAX_BODY_BYTES, **_ADMIN)
+async def import_mcp_tools(data: McpImport, request: Request, conn: asyncpg.Connection) -> Response:
+    """Day 14: connect to a remote MCP server and add its tools to the registry. Safe by default:
+    every imported tool is DISABLED, risk class `destructive` and tainting, with no context_map and
+    no grants. Nobody can call one until an admin reviews it (PATCH /tools/{name}: risk_class,
+    context_map, enabled) and grants it. A tool whose schema the gate can't fully understand is
+    skipped with the reason. Existing rows are never overwritten."""
+    actor, bad = _actor(request)
+    if bad:
+        return bad
+    if not _PREFIX.fullmatch(data.prefix):
+        return _refuse(400, "invalid_import", "prefix must match ^[a-z][a-z0-9_]{0,19}$")
+    upstream = {"kind": "mcp", "url": data.url, "tool": "tools.list",
+                **({"auth": data.auth} if data.auth is not None else {}),
+                **({"timeout_seconds": data.timeout_seconds} if data.timeout_seconds is not None else {})}
+    plan, why = mcp_upstream.compile_mcp(upstream, {}, data.credential_ref)
+    if why:
+        return _refuse(400, "invalid_import", why)
+    try:
+        remote = await mcp_upstream.discover(plan.http, data.credential_ref)
+    except UpstreamError as exc:
+        return _refuse(502, "mcp_upstream_error", str(exc))
+    wanted = set(data.only) if data.only is not None else None
+    imported: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for item in remote:
+        remote_name = item.get("name")
+        if not isinstance(remote_name, str) or not mcp_upstream.REMOTE_TOOL.fullmatch(remote_name):
+            skipped.append({"name": str(remote_name)[:64], "reason": "the remote tool's name isn't one this broker can use"})
+            continue
+        if wanted is not None and remote_name not in wanted:
+            continue
+        name = _local_name(data.prefix, remote_name)
+        schema = item.get("inputSchema")
+        row = {"name": name, "description": str(item.get("description") or "")[:500],
+               "args_schema": schema if isinstance(schema, dict) else {}, "risk_class": "destructive",
+               "context_map": {}, "taints_session": True, "enabled": False,
+               "upstream": {**{k: v for k, v in upstream.items() if k != "tool"}, "tool": remote_name},
+               "credential_ref": data.credential_ref}
+        tool = registry.compile_row(row)
+        if tool.problem:
+            skipped.append({"name": remote_name, "reason": tool.problem})
+            continue
+        try:
+            async with REGISTRY.changing(conn, actor):
+                await conn.execute(
+                    """INSERT INTO tools (name, description, args_schema, risk_class, context_map, taints_session,
+                                          upstream, credential_ref, enabled, created_by)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
+                    *(row[f] for f in ("name", *_TOOL_COLUMNS)), actor)
+        except asyncpg.UniqueViolationError:
+            skipped.append({"name": remote_name, "reason": f"'{name}' is already registered; left as it is"})
+            continue
+        imported.append(name)
+    return _json(200, {"imported": imported, "skipped": skipped,
+                       "note": "imported tools are disabled, risk class 'destructive', tainting, and have no grants; "
+                               "review each with PATCH /tools/{name}, then enable and grant it"})
+
+
 @patch("/tools/{name:str}", tags=["tools"], status_code=200, request_max_body_size=registry.MAX_BODY_BYTES, **_ADMIN)
 async def update_tool(name: str, data: ToolPatch, request: Request, conn: asyncpg.Connection) -> Response:
     """Change fields of a registry row. The result must be a row the gate fully understands;
@@ -404,5 +482,5 @@ async def remove_tool_approver(name: str, user: str, request: Request, state: St
     return _json(200, out)
 
 
-ROUTES = [register_agent, update_agent, list_grants, add_grant, remove_grant, register_tool, update_tool,
+ROUTES = [register_agent, update_agent, list_grants, add_grant, remove_grant, register_tool, import_mcp_tools, update_tool,
           remove_tool, add_tool_approver, remove_tool_approver]

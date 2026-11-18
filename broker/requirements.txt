@@ -9,3 +9,10 @@ slack_bolt==1.30.0
 slack_sdk==3.47.0
 aiohttp==3.14.5
 jsonschema==4.26.0
+# Day 14: MCP gateway. Pinned to the versions the gateway was tested with (see DECISIONS.md).
+mcp==2.3.0
+mcp-types==2.3.0
+starlette==1.7.0
+sse-starlette==3.4.11
+pydantic==2.13.5
+httpx2==2.13.1

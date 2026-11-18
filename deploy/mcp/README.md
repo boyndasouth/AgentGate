@@ -56,11 +56,23 @@ $token = (Invoke-RestMethod -Method Post -Uri "https://$env:AUTH0_DOMAIN/oauth/t
 Bridge a static header with `mcp-remote` in `claude_desktop_config.json`:
 
 ```json
-{ "mcpServers": { "agentgate": {
-    "command": "npx",
-    "args": ["-y", "mcp-remote", "https://<broker>/mcp", "--header", "Authorization:${AUTH_HEADER}"],
-    "env": { "AUTH_HEADER": "Bearer <token>" } } } }
+ "mcpServers": { "agentgate": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://<broker>/mcp",
+               "--transport", "http-only",
+               "--header", "Authorization:${AUTH_HEADER}"],
+      "env": { "AUTH_HEADER": "Bearer <Auth0 M2M token>" } } }
 ```
+
+Notes:
+- `--transport http-only` is required; without it mcp-remote can fall into
+  OAuth discovery, and the broker offers no `/register`.
+- The Auth0 token lasts 24 hours; refresh `AUTH_HEADER` when it expires.
+- Fully quit Claude Desktop (tray, Quit) after editing the config.
+- Render's free tier sleeps: the first connect can take over a minute. Open
+  `/health` first.
+- The server appears under plugins, not the "+" menu. Ask Claude "what tools
+  do you have from agentgate?" to confirm.
 
 The token in that file expires when the Auth0 token does (24 h by default): regenerate it then.
 

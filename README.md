@@ -41,6 +41,7 @@ The usual setup is one long-lived API key per tool, shared by every agent, with 
 | **Human approval** | Escalations post to Slack with Approve / Deny (or the admin UI). Timeout = deny. The broker replays the stored call itself, so the agent can't change the arguments after approval. |
 | **Tamper-evident audit log** | Every decision is a row whose hash covers the previous row's hash. `GET /audit/verify` points to the first edited, deleted or reordered row. Arguments are stored as HMACs, never in plain text. |
 | **Anchored outside the database** | Every 6 hours a GitHub Action commits a signed checkpoint of the chain head to the `audit-anchors` branch, so even a full rewrite of the chain by someone with database access shows up. |
+| **MCP gateway** | The same gate is also an MCP server at `/mcp`. Claude Desktop, MCP Inspector or any MCP client logs in with its agent's Auth0 token, sees only the tools that agent may use, and every call goes through the same checks, approvals and audit log as `POST /tools/{name}` ([how](#use-it-from-an-mcp-client-day-14)). |
 | **Delegation chains** | An agent can grant another agent some of its tools for a while; the other agent trades its own token for one that acts on the first agent's behalf (RFC 8693-style). The delegate is judged as the agent it acts for, never more. Max 2 hops, same owner, revocable, and the grant is an OpenFGA relationship. |
 | **Invoice matching** | A small payment goes through alone only against an open invoice from that payee for exactly that amount; paying it closes the invoice. |
 | **Kill switch** | One click revokes every token an agent holds, mid-session, with no restart, and every delegation it takes part in. |
@@ -66,6 +67,8 @@ flowchart LR
         MT[Mock tools<br/>web, inbox, email,<br/>payments, CRM]
     end
 
+    MC["MCP client<br/>Claude Desktop, Inspector"]
+    MG["/mcp<br/>MCP gateway"]
     FGA[(OpenFGA<br/>ReBAC + conditions)]
     DB[(Supabase Postgres<br/>agents, sessions, tokens,<br/>approvals, audit_events)]
     S[Slack<br/>Approve / Deny]
@@ -73,6 +76,7 @@ flowchart LR
 
     O -- "orchestrator key" --> T
     R & M & F -- "Bearer token" --> G
+    MC -- "Auth0 M2M token" --> MG --> G
     T -- "may hold scope?" --> FGA
     G --> D -- "check with amount + taint" --> FGA
     D -- allow --> MT
@@ -386,7 +390,7 @@ Since Day 11 a tool is a row in the `tools` table, not Python code. The gate rea
 | `risk_class` | `read`, `write`, `egress`, `money` or `destructive` |
 | `context_map` | Which argument feeds which policy input, e.g. `{"amount": "amount", "payee": "to_account", "invoice": "invoice_id"}`. The OpenFGA conditions are unchanged |
 | `taints_session` | Whether a successful call taints the session (default: yes) |
-| `upstream` | Where the call goes: `builtin` (the mock tools) or, since Day 12, `http` (a real API). MCP upstreams come next |
+| `upstream` | Where the call goes: `builtin` (the mock tools) `http` (a real API, since Day 12) or `mcp` (a tool on a remote MCP server, since Day 14) |
 | `credential_ref` | The NAME of the env var that holds the upstream's credential (`UPSTREAM_*`), never the secret |
 | `enabled` | Off by default for a new row |
 
@@ -446,8 +450,25 @@ agent ── Authorization: Bearer <Auth0 token> ──► POST /tokens/agent {t
 
 `.\scripts\test_day13.ps1` runs the checks against the local stack and a mock issuer (`deploy/mock-issuer/server.py`, in compose), including the done check: a standalone script with only a client id and secret gets a token and calls a granted tool; wrong audience, expired token, `alg` swap and an unmapped client are refused; the kill switch kills the agent's live tokens.
 
+### Use it from an MCP client (Day 14)
+
+The broker also speaks MCP at `https://<broker>/mcp` (Streamable HTTP, inside the same process). It is a second door into the same gate, not a second policy: `/mcp` and `POST /tools/{name}` call the same code (`broker/app/gate.py`), so they can't drift apart.
+
+- **Login.** The client sends its agent's Auth0 M2M token as `Authorization: Bearer ...` on every request. The broker runs the Day 13 check, mints short-lived AgentGate tokens itself for the MCP session and renews them before they expire, so the client never holds one. An MCP session belongs to the agent that opened it.
+- **`tools/list`** returns exactly the tools that agent may hold: granted, enabled and valid in the registry. If the policy engine can't be reached, it returns none.
+- **`tools/call`** of anything else (hidden, unknown, bad arguments) is denied by the gate and audited against the agent that tried. Hiding a tool is a convenience; the gate is the control.
+- **Approvals.** A call that needs a human **waits**: the request stays open with a progress notification about every 5 seconds until someone decides in Slack or the admin UI, up to the approval timeout. Approve returns the tool's result, Deny or timeout returns an error. If the client gives up first, the approval is closed, so a late Approve can't run a call nobody is waiting for. At most 16 calls wait at once, and a waiting call holds no database connection.
+- **Remote MCP tools.** A registry tool can forward to another MCP server (`upstream.kind = "mcp"`). `POST /mcp-upstreams/import` turns a remote server's tools into registry rows that arrive **disabled**, classed `destructive`, tainting and with no grants, so nothing is usable until a person reviews it. The upstream client has the same limits as the http one: https only, a public address that is resolved once and pinned, no redirects, a size cap, and credentials that never reach the agent.
+
+Checked with MCP Inspector and with Claude Desktop (through the `mcp-remote` bridge) against the deployed broker: the agent `ext-bot` saw only its three tools, `query_customers` was allowed, `transfer_funds` was not offered, and `send_email` waited in Slack until its owner approved it. Setup for both clients, including the Claude Desktop config, is in [`deploy/mcp/README.md`](deploy/mcp/README.md).
+
+`.\scripts\test_day14.ps1` runs 90 checks with the real MCP Python SDK client: refusals for a missing, forged, wrong-audience or unmapped login, the visible tool set, the taint-then-egress approval flow (approve, deny, client gives up), session ownership, and the remote-server hardening.
+
 ## Limitations and future work
 
+- **MCP: handshake-era protocol only.** The gateway keeps one session (and its taint) per MCP session, so it serves the protocol versions that have a session id. The newer sessionless version is refused with HTTP 400 so clients fall back. Revisit when clients stop offering the handshake.
+- **Claude Desktop needs a bridge.** It reaches the gateway through `mcp-remote` with `--transport http-only` and an Auth0 token in a header; without that flag the bridge falls into an OAuth flow the broker doesn't offer. The Auth0 token lasts 24 hours, so the config needs a fresh one daily. On Render's free tier the first connection after idle can take over a minute.
+- **A waiting approval holds an open connection.** The cap (16) and the approval timeout bound it, but a busy deployment would want the polling model or a separate gateway service.
 - **Taint follows a self-login agent only while it holds a live token.** Ten minutes after its last token in a tainted session, a new session is clean, the same as a new orchestrator run. The allowlist and invoice conditions (G02, G04, G05) cover that for the demo tools; a tool granted with plain `direct_if_untainted` relies on taint alone.
 - **An Auth0 access token is a bearer credential for up to 24 hours.** Whoever copies it can log in as that agent until it expires (each AgentGate token still lasts 10 minutes, and the kill switch still works). A shorter lifetime in Auth0 costs more of the monthly token quota. Sender-constrained tokens (DPoP, mTLS) would fix this properly.
 - **Agent login depends on Auth0.** If its keys can't be fetched for over an hour, or the monthly M2M quota is used up, agents can't log in; live tokens keep working until they expire.
@@ -473,6 +494,7 @@ agent ── Authorization: Bearer <Auth0 token> ──► POST /tokens/agent {t
 | Policy | OpenFGA v1.22.1 (Zanzibar-style ReBAC with conditions) |
 | Broker | Python, Litestar, msgspec, jsonschema, asyncpg, PyJWT (Ed25519 for its own tokens, RS256 to verify Auth0's), httpx |
 | Agents | Pydantic AI + Gemini (fallbacks: Gemini Flash-Lite, Groq) |
+| MCP | Official MCP Python SDK (`mcp`, pinned), Streamable HTTP |
 | Approvals | Slack Bolt for Python (Socket Mode locally, HTTP mode deployed) |
 | Data + live feed | Supabase Postgres + Realtime (Auth0 via Third-Party Auth, RLS) |
 | Admin UI | SvelteKit 2 + Svelte 5, Auth.js with Auth0, on Vercel |
@@ -482,12 +504,12 @@ agent ── Authorization: Bearer <Auth0 token> ──► POST /tokens/agent {t
 
 ```
 agentgate/
-├── broker/      Litestar API: tokens, tool gateway, tool registry, decision engine, taint, approvals, Slack, audit, delegation, invoices
+├── broker/      Litestar API: tokens, tool gateway, tool registry, MCP gateway, decision engine, taint, approvals, Slack, audit, delegation, invoices
 ├── policy/      model.fga, tuples.yaml (seed tuples; the API adds its own), tests.fga.yaml, model.json
 ├── agents/      Pydantic AI agents, orchestrator, gate client, offline tests
 ├── ui/          SvelteKit admin UI (Auth0, Supabase Realtime, demo runner)
 ├── eval/        injection suite (cases.py, injection_suite.py), LLM-in-the-loop suite (llm_cases.py, llm_suite.py), latency benchmark
-├── deploy/      Render (Dockerfile, start.sh, seed_fga.py, fga_db.py), Slack manifests, Auth0 setup, Supabase RLS SQL, anchor branch helpers, mock upstream and mock issuer
+├── deploy/      Render (Dockerfile, start.sh, seed_fga.py, fga_db.py), Slack manifests, Auth0 setup, Supabase RLS SQL, anchor branch helpers, MCP client setup (`mcp/`), mock upstream and mock issuer
 ├── examples/    agent_login.py: a standard-library agent that logs in as itself
 ├── scripts/     load_store.py, anchor.py, demo + eval runners, fga CLI wrapper
 ├── .github/     scheduled workflow that anchors the audit chain head in git

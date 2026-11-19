@@ -19,6 +19,13 @@
 		return Math.max(0, Math.round((Date.parse(a.expires_at) - now) / 1000));
 	}
 
+	function ttlPct(a: Approval): number {
+		const left = secondsLeft(a);
+		if (left === null) return 0;
+		const total = a.created_at && a.expires_at ? Math.max(1, (Date.parse(a.expires_at) - Date.parse(a.created_at)) / 1000) : 120;
+		return Math.max(0, Math.min(100, (left / total) * 100));
+	}
+
 	function summary(a: Approval): string | null {
 		const s = a.args_summary ?? a.summary ?? null;
 		if (s == null) return null;
@@ -35,7 +42,7 @@
 	}
 </script>
 
-<section class="card">
+<section class="card approvals-card">
 	<header class="card-head">
 		<h2>Approvals <span class="count">{approvals.length}</span></h2>
 		<span class="muted small">same queue as Slack · first decision wins</span>
@@ -55,8 +62,9 @@
 					<strong>agent:{a.agent_id}</strong> → <code>{a.tool}</code>
 					{#if a.session_tainted}<span class="pill tiny taint">⚠ tainted</span>{/if}
 				</div>
-				{#if left !== null}<span class="muted small mono">{left}s left</span>{/if}
+				{#if left !== null}<span class="left small mono">{left}s</span>{/if}
 			</div>
+			{#if left !== null}<div class="ttl" aria-hidden="true"><i style="width:{ttlPct(a)}%"></i></div>{/if}
 			<p class="reason">{a.reason}</p>
 			{#if summary(a)}<pre class="args">{summary(a)}</pre>{/if}
 			<div class="row">
@@ -65,6 +73,9 @@
 			</div>
 		</article>
 	{:else}
-		<p class="muted empty">Nothing waiting for a human.</p>
+		<div class="quiet">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></svg>
+			<span>Nothing waiting for a human.</span>
+		</div>
 	{/each}
 </section>

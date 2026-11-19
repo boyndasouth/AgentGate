@@ -38,11 +38,14 @@
 	}
 </script>
 
-<section class="card">
+<section class="card verify-card">
 	<header class="card-head">
 		<h2>Audit chain</h2>
 		<span class="muted small">sha256(prev_hash ‖ event), recomputed by the broker</span>
 	</header>
+	<div class="chain" class:run={busy} class:ok={!busy && result?.valid} class:bad={!busy && result && !result.valid} aria-hidden="true">
+		{#each Array(12) as _, i}{#if i > 0}<span class="lnk"></span>{/if}<span class="blk" style="--i:{i}"></span>{/each}
+	</div>
 	<button class="btn primary wide" disabled={busy} onclick={verify}>{busy ? 'Verifying…' : 'Verify chain'}</button>
 
 	{#if error}<p class="err">{error}</p>{/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { colorFor } from '$lib/colors';
 	import { MODES, defaultMode, describeGrant, directWarning, paramsFor, untilTime } from '$lib/grants';
 	import type { Agent, Delegation, Grant, Tool } from '$lib/types';
 
@@ -145,6 +146,8 @@
 		onchange();
 	}
 
+	const mono = (a: Agent) => (a.display_name ?? a.id).replace(/[^a-z0-9]/gi, ' ').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('');
+
 	function delegationLine(agentId: string, d: Delegation): string {
 		const until = `until ${untilTime(d.expires_at)}`;
 		if (d.role === 'granted') return `gave ${d.tools.join(', ')} to ${d.delegate} ${until}`;
@@ -153,9 +156,9 @@
 	}
 </script>
 
-<section class="card">
+<section class="card agents-card">
 	<header class="card-head">
-		<h2>Agents</h2>
+		<h2>Agents <span class="count">{agents.length}</span></h2>
 		<span class="row">
 			<span class="muted small">10-minute tokens · grants read live from OpenFGA</span>
 			<button class="btn tiny" onclick={() => (showRegister = !showRegister)}>{showRegister ? 'Cancel' : '+ Register agent'}</button>
@@ -181,11 +184,13 @@
 	{/if}
 
 	<div class="agents">
-		{#each agents as agent (agent.id)}
+		{#each agents as agent, i (agent.id)}
 			{@const disabled = agent.status === 'disabled'}
-			<article class="agent" class:off={disabled}>
+			<article class="agent" class:off={disabled} style="--c:{colorFor(i)}">
 				<div class="agent-top">
-					<div>
+					<div class="agent-id">
+						<span class="avatar">{mono(agent)}</span>
+						<div>
 						<div class="agent-name">{agent.display_name ?? agent.id}</div>
 						<div class="muted small">agent:{agent.id} · owner {agent.owner ?? '—'}</div>
 						<div class="muted small">
@@ -194,6 +199,7 @@
 							{:else}
 								tokens minted by the orchestrator
 							{/if}
+						</div>
 						</div>
 					</div>
 					<span class="pill {disabled ? 'deny' : 'allow'}">{disabled ? 'disabled' : 'active'}</span>

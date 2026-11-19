@@ -79,7 +79,7 @@
 	}
 </script>
 
-<section class="card">
+<section class="card demo-card">
 	<header class="card-head">
 		<h2>Demo runner</h2>
 		<span class="muted small">scripted agents, no LLM · real tokens, real gate calls</span>

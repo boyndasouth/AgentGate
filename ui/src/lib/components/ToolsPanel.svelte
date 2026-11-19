@@ -122,7 +122,7 @@
 	}
 </script>
 
-<section class="card">
+<section class="card tools-card">
 	<header class="card-head">
 		<h2>Tools <span class="count">{tools.length}</span></h2>
 		<button class="btn tiny" onclick={() => (showRegister = !showRegister)}>{showRegister ? 'Cancel' : '+ Register tool'}</button>

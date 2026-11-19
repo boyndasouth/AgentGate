@@ -9,6 +9,9 @@
 	import ToolsPanel from '$lib/components/ToolsPanel.svelte';
 	import VerifyPanel from '$lib/components/VerifyPanel.svelte';
 	import DemoPanel from '$lib/components/DemoPanel.svelte';
+	import Logo from '$lib/components/Logo.svelte';
+	import GateField from '$lib/components/GateField.svelte';
+	import Count from '$lib/components/Count.svelte';
 
 	let { data } = $props();
 
@@ -29,6 +32,21 @@
 	let brokenId = $state<number | null>(null);
 	let now = $state(Date.now());
 	let broker = $state<{ state: 'waking' | 'up' | 'down'; ms?: number; detail?: string }>({ state: 'waking' });
+
+	// Live numbers for the stat strip, taken from the events the feed already holds.
+	const stats = $derived.by(() => {
+		let allow = 0, escalate = 0, deny = 0;
+		const tainted = new Set<string>();
+		for (const e of events) {
+			if (e.decision === 'allow') allow++;
+			else if (e.decision === 'escalate') escalate++;
+			else if (e.decision === 'deny') deny++;
+			if (e.session_tainted && e.session_id) tainted.add(e.session_id);
+		}
+		const active = agents.filter((a) => a.status !== 'disabled').length;
+		return { allow, escalate, deny, tainted: tainted.size, active, total: agents.length, spark: events.slice(0, 36).reverse() };
+	});
+	const initials = (s: string | undefined | null) => (s ?? '?').replace(/[^a-z0-9]/gi, ' ').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('') || '?';
 
 	function decodeClaims(jwt: string): Record<string, unknown> | null {
 		try {
@@ -209,15 +227,17 @@
 
 <div class="shell">
 	<header class="topbar">
-		<div class="brand"><span class="logo">⛨</span> AgentGate <span class="muted">admin</span></div>
+		<div class="brand"><Logo /> AgentGate <span class="muted">admin</span></div>
 		<div class="row">
-			<button class="status {broker.state}" onclick={wake} title={broker.detail ?? ''}>
+			<button class="status {broker.state}" onclick={wake} title={broker.detail ?? 'Click to ping the broker'}>
 				<span class="dot"></span>
-				broker {data.brokerHost ?? '(not configured)'} ·
-				{broker.state === 'waking' ? 'waking…' : broker.state === 'up' ? `up (${broker.ms} ms)` : 'down'}
+				{data.brokerHost ?? '(not configured)'} ·
+				{broker.state === 'waking' ? 'waking…' : broker.state === 'up' ? `up · ${broker.ms} ms` : 'down'}
 			</button>
 			<button class="btn ghost" onclick={refreshAll}>Refresh</button>
-			<span class="muted small">{data.admin?.email ?? data.admin?.name}{data.admin?.fgaUser ? ` · user:${data.admin.fgaUser}` : ''}</span>
+			<span class="who" title={data.admin?.fgaUser ? `user:${data.admin.fgaUser}` : ''}>
+				<i>{initials(data.admin?.name ?? data.admin?.email)}</i>{data.admin?.email ?? data.admin?.name}
+			</span>
 			<form method="POST" action="/signout"><button class="btn ghost">Sign out</button></form>
 		</div>
 	</header>
@@ -226,25 +246,87 @@
 		<p class="err banner">BROKER_URL and AGENTGATE_ADMIN_KEY must be set on the server.</p>
 	{/if}
 
-	<main class="grid">
-		<div class="col-left">
-			<AgentsPanel {agents} {tools} error={agentsError} onchange={loadRegistry} />
-			<ApprovalsPanel
-				{approvals}
-				error={approvalsError}
-				canApprove={Boolean(data.admin?.canApprove)}
-				{now}
-				ondecided={() => {
-					loadApprovals();
-					pollEvents();
-				}}
-			/>
-			<ToolsPanel {tools} error={toolsError} onchange={loadRegistry} />
-			<VerifyPanel onresult={(id) => (brokenId = id)} />
-		</div>
-		<div class="col-right">
-			<DemoPanel enabled={data.demoEnabled} onactivity={() => mode === 'polling' && pollEvents()} />
-			<FeedPanel {events} {mode} error={feedError} {fresh} {brokenId} note={rtWhy} />
+	<main class="content">
+		<section class="hero" aria-label="Live checkpoint">
+			<div class="hero-head">
+				<div>
+					<p class="eyebrow"><b>●</b> live checkpoint</p>
+					<h1 class="kinetic">
+						<span class="w"><span style="--i:0">Every</span></span>
+						<span class="w"><span style="--i:1">call</span></span>
+						<span class="w"><span style="--i:2">passes</span></span>
+						<span class="w"><span style="--i:3">the</span></span>
+						<span class="w"><span style="--i:4"><em>gate.</em></span></span>
+					</h1>
+				</div>
+				<div>
+					<p class="boot">
+						<span class="ok">GATE ONLINE</span> · {stats.active} agents · {tools.filter((t) => t.enabled).length} tools · {approvals.length} held<span class="cur"></span>
+					</p>
+					<div class="legend" style="margin-top: 10px">
+						<span style="--c: #6dffb3"><i></i>allowed</span>
+						<span style="--c: #ffb21f"><i></i>held for a human</span>
+						<span style="--c: #ff3d5a"><i></i>blocked</span>
+						<span style="--c: #ff7a1a"><i></i>tainted</span>
+					</div>
+				</div>
+			</div>
+			<GateField {agents} {tools} {events} {approvals} />
+		</section>
+
+		<section class="ticker" aria-label="Summary of recent events">
+			<div class="t allow" class:hot={stats.allow > 0} style="--k: {Math.min(1, stats.allow / Math.max(1, events.length))}">
+				<div class="label">Allowed <span>last {events.length}</span></div>
+				<div class="num"><Count value={stats.allow} /></div>
+				<div class="spark" aria-hidden="true">{#each stats.spark as e (e.id)}<i class={e.decision}></i>{/each}</div>
+				<span class="bar"></span>
+			</div>
+			<div class="t escalate" class:hot={stats.escalate > 0} style="--k: {Math.min(1, stats.escalate / Math.max(1, events.length))}">
+				<div class="label">Escalated</div>
+				<div class="num"><Count value={stats.escalate} /></div>
+				<div class="sub">sent to a human</div>
+				<span class="bar"></span>
+			</div>
+			<div class="t deny" class:hot={stats.deny > 0} style="--k: {Math.min(1, stats.deny / Math.max(1, events.length))}">
+				<div class="label">Blocked</div>
+				<div class="num"><Count value={stats.deny} /></div>
+				<div class="sub">stopped by the gate</div>
+				<span class="bar"></span>
+			</div>
+			<div class="t taint" class:hot={stats.tainted > 0} style="--k: {Math.min(1, stats.tainted / 4)}">
+				<div class="label">Tainted sessions</div>
+				<div class="num"><Count value={stats.tainted} /></div>
+				<div class="sub">saw untrusted content</div>
+				<span class="bar"></span>
+			</div>
+			<div class="t agents" style="--k: {stats.total ? stats.active / stats.total : 0}">
+				<div class="label">Agents</div>
+				<div class="num"><Count value={stats.active} /><small>/ {stats.total} active</small></div>
+				<div class="sub">{approvals.length} approval{approvals.length === 1 ? '' : 's'} waiting</div>
+				<span class="bar"></span>
+			</div>
+		</section>
+
+		<div class="grid">
+			<div class="col-left">
+				<FeedPanel {events} {mode} error={feedError} {fresh} {brokenId} note={rtWhy} />
+				<AgentsPanel {agents} {tools} error={agentsError} onchange={loadRegistry} />
+				<ToolsPanel {tools} error={toolsError} onchange={loadRegistry} />
+			</div>
+			<div class="col-right">
+				<ApprovalsPanel
+					{approvals}
+					error={approvalsError}
+					canApprove={Boolean(data.admin?.canApprove)}
+					{now}
+					ondecided={() => {
+						loadApprovals();
+						pollEvents();
+					}}
+				/>
+				<DemoPanel enabled={data.demoEnabled} onactivity={() => mode === 'polling' && pollEvents()} />
+				<VerifyPanel onresult={(id) => (brokenId = id)} />
+			</div>
 		</div>
 	</main>
 </div>

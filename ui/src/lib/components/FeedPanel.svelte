@@ -44,7 +44,7 @@
 
 <section class="card feed">
 	<header class="card-head">
-		<h2>Decision feed</h2>
+		<h2>Decision feed <span class="count">{shown.length}</span></h2>
 		<div class="row">
 			<span class="mode {mode}"><span class="dot"></span>{modeLabel[mode]}</span>
 			<select bind:value={filter} aria-label="Filter events">
@@ -67,12 +67,12 @@
 			</thead>
 			<tbody>
 				{#each shown as e (e.id)}
-					<tr class:fresh={fresh.has(e.id)} class:broken={brokenId === e.id} class:tainted={e.session_tainted}>
+					<tr class="d-{e.decision}" class:fresh={fresh.has(e.id)} class:broken={brokenId === e.id} class:tainted={e.session_tainted}>
 						<td class="mono muted">{e.id}</td>
 						<td class="mono">{clock(e.ts)}</td>
 						<td class="mono small">{e.event_type}</td>
 						<td>{e.agent_id ?? '—'}</td>
-						<td><code>{e.tool ?? ''}</code></td>
+						<td>{#if e.tool}<code>{e.tool}</code>{/if}</td>
 						<td><span class="pill {e.decision}">{e.decision}</span></td>
 						<td>
 							{#if e.session_tainted === true}<span class="pill tiny taint" title="session {short(e.session_id)}">⚠ tainted</span>

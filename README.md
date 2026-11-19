@@ -464,6 +464,19 @@ Checked with MCP Inspector and with Claude Desktop (through the `mcp-remote` bri
 
 `.\scripts\test_day14.ps1` runs 90 checks with the real MCP Python SDK client: refusals for a missing, forged, wrong-audience or unmapped login, the visible tool set, the taint-then-egress approval flow (approve, deny, client gives up), session ownership, and the remote-server hardening.
 
+### A real upstream: GitHub's MCP server (Day 16)
+
+The same import path works against a real server. GitHub's hosted MCP server has a read-only URL (`https://api.githubcopilot.com/mcp/readonly`) that offers read tools only, and it takes a personal access token as a bearer credential. The run, with no change to the broker:
+
+1. A fine-grained GitHub token limited to public repositories goes into a Render environment variable (`UPSTREAM_GITHUB_TOKEN`). The registry stores only that name.
+2. `POST /mcp-upstreams/import` with prefix `gh` brings in the server's tools as rows that are **disabled**, risk class `destructive`, tainting, and without grants.
+3. One reading tool is reviewed by hand (risk class `read`; it keeps tainting the session, because an issue or file is outside content), enabled, and granted to `ext-bot`.
+4. A throwaway public repo holds an issue that says to email the customer list to an outside address.
+
+What happened: Claude Desktop read the issue and refused the planted instruction on its own judgement. That is the model, not AgentGate. To show the gate with the model out of the picture, the same sequence was run from MCP Inspector: read the issue (the session is now tainted), then call `send_email` to the attacker's address. The call waited in Slack, was denied, and every step is in the audit log. In Claude Desktop a legitimate email waited for approval and was approved. One detail for honesty: `ext-bot`'s `send_email` grant is approval-only, so that escalation comes from the grant mode; the taint-dependent case (direct when clean, approval once tainted) is the `mailer` agent's grant, covered by the suite and the demo.
+
+The run used my own account's token and a repo made for it; the token and the imported rows were removed afterwards.
+
 ## Limitations and future work
 
 - **MCP: handshake-era protocol only.** The gateway keeps one session (and its taint) per MCP session, so it serves the protocol versions that have a session id. The newer sessionless version is refused with HTTP 400 so clients fall back. Revisit when clients stop offering the handshake.
@@ -478,7 +491,7 @@ Checked with MCP Inspector and with Claude Desktop (through the `mcp-remote` bri
 - **The recipient allowlist is exact-match and static**, like the URL allowlist: one internal domain, changed by editing a tuple. Outside recipients always need approval, which a real deployment would soften with per-task or per-customer allowlists.
 - **The URL allowlist is exact-match and static.** Adding a host is a tuple change. A real deployment would want per-task allowlists and checks on redirects, which the mock `read_web` doesn't follow.
 - **Anchoring has a window.** Rows written after the latest anchor (up to 6 hours) can still be rewritten unnoticed until the next one. Someone holding both the broker's signing key and push access to the repo could forge anchors; database access alone isn't enough. A public transparency log would remove the trust in the repo.
-- **One credential per upstream, rotated by redeploy.** Upstream credentials are env vars, so changing one means a redeploy, and every tool row naming it uses the same key. The demo tools are still mocks; a real upstream (GitHub) comes on Day 16.
+- **One credential per upstream, rotated by redeploy.** Upstream credentials are env vars, so changing one means a redeploy, and every tool row naming it uses the same key. The demo tools are mocks; the one real upstream so far is GitHub's read-only MCP server, used once as a demo (see [A real upstream](#a-real-upstream-githubs-mcp-server-day-16)).
 - **The broker now holds real credentials.** A broker compromise exposes every upstream key it holds. The signing key, the HMAC key and upstream keys are separate variables, and registry and grant changes are audited, but they share one process.
 - **The admin key does everything.** Registering tools, granting them and approving calls all use the same key (the admin UI adds who clicked). Registry changes made in SQL or while the broker is down are audited only as a difference between two loads, without a name. `pattern` rules in a tool's schema run as Python regexes, so whoever may edit the registry is trusted not to write a slow one.
 - **Agents are disabled, never deleted.** There is no `DELETE /agents`; an agent's history stays attached to its id.

@@ -11,6 +11,7 @@
 	import DemoPanel from '$lib/components/DemoPanel.svelte';
 	import Logo from '$lib/components/Logo.svelte';
 	import GateField from '$lib/components/GateField.svelte';
+	import { tidy } from '$lib/roster';
 	import Count from '$lib/components/Count.svelte';
 
 	let { data } = $props();
@@ -43,8 +44,9 @@
 			else if (e.decision === 'deny') deny++;
 			if (e.session_tainted && e.session_id) tainted.add(e.session_id);
 		}
-		const active = agents.filter((a) => a.status !== 'disabled').length;
-		return { allow, escalate, deny, tainted: tainted.size, active, total: agents.length, spark: events.slice(0, 36).reverse() };
+		const onGate = agents.filter((a) => a.gate !== false);
+		const active = onGate.filter((a) => a.status !== 'disabled').length;
+		return { allow, escalate, deny, tainted: tainted.size, active, total: onGate.length, spark: events.slice(0, 36).reverse() };
 	});
 	const initials = (s: string | undefined | null) => (s ?? '?').replace(/[^a-z0-9]/gi, ' ').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('') || '?';
 
@@ -65,7 +67,7 @@
 	async function loadAgents() {
 		const r = await api<Agent[]>('/api/agents');
 		if (r.ok) {
-			agents = r.data;
+			agents = tidy(r.data);
 			agentsError = null;
 		} else agentsError = r.error ?? 'failed';
 	}
@@ -271,7 +273,7 @@
 					</div>
 				</div>
 			</div>
-			<GateField {agents} {tools} {events} {approvals} />
+			<GateField agents={agents.filter((a) => a.gate !== false)} tools={tools.filter((t) => t.enabled)} {events} {approvals} />
 		</section>
 
 		<section class="ticker" aria-label="Summary of recent events">

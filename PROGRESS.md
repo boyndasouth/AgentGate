@@ -6,6 +6,17 @@
 
 **Repo:** github.com/boyndasouth/AgentGate (branch main, Day 12 follow-up at ba5f164) · **Broker:** https://agentgate-broker.onrender.com (Day 13 patch is OpenAPI v0.10.0) · **Admin UI:** Vercel, root dir `ui/` · **DB:** Supabase, session pooler; OpenFGA in its own `openfga` schema · **Slack:** two apps in one workspace, channel `C0CHR0W285R` · **Auth0:** one Regular Web App "AgentGate Admin", sign-ups disabled; Day 13 adds an API ("AgentGate API") and one M2M application per self-login agent (to be created, see `deploy/auth0/README.md`)
 
+## Try it: tour page, Codespaces, README section (2026-11-18)
+- [x] **Public `/tour`** (`ui/src/routes/tour/`): a replay of a real recorded run (five beats, the audit rows it wrote, the headline numbers from the committed result files). Prerendered, so Vercel serves static HTML: no login, no key, no call to the broker. `/tour` is in the guard's PUBLIC list in `ui/src/hooks.server.ts`; the sign-in page links to it.
+- [x] **`eval/export_tour.py`** records the beats against a running broker (the same scripted calls as the UI demo runner) and writes `ui/src/lib/tour-data.json`. The tamper beat edits one audit row through `--psql-cmd` and restores it in a `finally`; the script exits 1 if the chain doesn't verify afterwards. `--show --out -` prints the beats in the terminal and writes nothing (what the README tells visitors to run).
+- [x] **`scripts/quickstart.sh`**: the PowerShell quickstart as one bash script for Linux, macOS, WSL and Codespaces. **`.devcontainer/devcontainer.json`**: Codespaces with Docker-in-Docker, runs the script after create.
+- [x] README: new "Try it" section (watch / Codespaces / local) before "The problem".
+- [ ] Shiwin: replace `REPLACE-ME.vercel.app` in the README with the real Vercel URL; push; check `https://<your-vercel-url>/tour` in a private window (should open without login).
+- [ ] Shiwin: open the repo in a Codespace once and check it comes up (see Tested / not tested). Re-record from your own stack with `python eval/export_tour.py` if you want the page to show your Render/Windows numbers.
+- Tested before delivery (workspace: Postgres 16 as a non-superuser, OpenFGA v1.22.1 in memory, broker at HEAD, no Docker): the recorder end to end (chain valid, tamper caught at the edited row, restored; no key or token in the data file); `--show --out -` leaves the file untouched; `svelte-check` 0 errors, `vite build` ok with `/tour` prerendered to `tour.html`; the page in headless Chrome at desktop and phone widths (no console errors, no horizontal scroll on a phone); unauthenticated `/tour` 200 and `/` still redirects to `/login`; UI smoke all passed.
+- **Not tested:** `scripts/quickstart.sh` and `.devcontainer` (no Docker daemon here: `bash -n` only), a real Codespace, the page on Vercel, the recording against Render or Slack. The tour numbers come from the committed `eval/results/` files, not from this run.
+- Known limits: the snapshot is a recording of a local stack with approvals through the admin API, and the page says so. It goes stale when the gate changes: re-run the recorder.
+
 ## Day 14-15 checklist
 - [x] **Decisions (Shiwin, before the build):** escalation over MCP blocks and waits; the gateway runs inside the broker; clients authenticate with their Auth0 M2M token and the gateway mints AgentGate tokens itself.
 - [x] **One gate:** `POST /tools/{name}` steps moved into `broker/app/gate.py` (`run_gate`); token minting and the Auth0 login check into `broker/app/minting.py`. Suite 36/36 before and after.

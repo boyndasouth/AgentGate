@@ -22,5 +22,10 @@
 			<input type="hidden" name="redirectTo" value="/" />
 			<button class="btn primary wide" type="submit">Sign in with Auth0</button>
 		</form>
+		<a class="btn wide tourlink" href="/tour">Watch a recorded demo (no login)</a>
 	</div>
 </main>
+
+<style>
+	.tourlink { display: block; text-align: center; text-decoration: none; }
+</style>

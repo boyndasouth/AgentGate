@@ -1,0 +1,20 @@
+{
+	"name": "AgentGate",
+	// Brings up the whole local stack (OpenFGA, Postgres, broker) inside the Codespace with
+	// Docker-in-Docker, then you run the demo and the evals from the terminal. No Slack, Auth0
+	// or model key needed. First start takes a few minutes: it builds the broker image.
+	"image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+	"features": {
+		"ghcr.io/devcontainers/features/docker-in-docker:2": {}
+	},
+	"postCreateCommand": "bash scripts/quickstart.sh",
+	// After a stop/start the containers are gone from memory but not from disk: bring them back.
+	"postStartCommand": "docker compose up -d",
+	"forwardPorts": [8000],
+	"portsAttributes": {
+		"8000": { "label": "AgentGate broker (API docs at /schema)", "onAutoForward": "silent" }
+	},
+	"customizations": {
+		"codespaces": { "openFiles": ["README.md"] }
+	}
+}

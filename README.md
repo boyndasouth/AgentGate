@@ -19,6 +19,28 @@ Run from the admin UI's demo runner with Slack open beside it (scripted gate cal
 | 5. Kill switch | Revoke the mailer: the token it already holds fails on the very next call, with no restart. |
 | 6. The numbers | 36 of 36 injection attacks stopped; +6.8 ms p95 per call. |
 
+## Try it
+
+Three ways in, from no effort to full control. The live admin UI (approve payments, kill switches) stays invite-only, so none of these need an account on it.
+
+| | What you get | Effort |
+| --- | --- | --- |
+| **Watch** | [**Recorded demo**](https://agent-gate-murex.vercel.app/tour): a real run played back step by step (a payment, a limit hit, a prompt injection, a tampered audit row, a kill switch), with the audit rows it wrote. No login. | A click |
+| **Run it in your browser** | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/boyndasouth/AgentGate?quickstart=1) brings up the whole stack in a cloud dev container, then you run the demo and the 36-case suite from its terminal. Needs a GitHub account. | A few minutes the first time (it builds the broker image) |
+| **Run it on your machine** | Docker and Python 3.10+. Linux, macOS, WSL: `bash scripts/quickstart.sh`. Windows: the [PowerShell quickstart](#quickstart-windows-powershell). | About 5 minutes |
+
+Once the stack is up, from the repo root (no Slack, Auth0 or model key needed; approvals are decided through the admin API):
+
+```bash
+python3 eval/export_tour.py --show --out -   # watch the six beats, step by step, in your terminal
+python3 eval/injection_suite.py              # the 36-case injection suite
+python3 eval/latency_bench.py                # what the gate adds to an allowed call
+```
+
+Want your own agent behind the gate? Connect an MCP client or a script that logs in as itself: [Use it from an MCP client](#use-it-from-an-mcp-client-day-14) and [Agents log in as themselves](#agents-log-in-as-themselves-day-13). That part needs your own Auth0 tenant, because an agent's identity is an Auth0 client.
+
+The recorded demo is a replay: it is regenerated with `python3 eval/export_tour.py` against a running broker, and it says on the page that approvals in that recording were decided through the admin API rather than Slack.
+
 ## The problem
 
 Agents in production already reach far more than anyone approved:
@@ -522,11 +544,12 @@ agentgate/
 ├── broker/      Litestar API: tokens, tool gateway, tool registry, MCP gateway, decision engine, taint, approvals, Slack, audit, delegation, invoices
 ├── policy/      model.fga, tuples.yaml (seed tuples; the API adds its own), tests.fga.yaml, model.json
 ├── agents/      Pydantic AI agents, orchestrator, gate client, offline tests
-├── ui/          SvelteKit admin UI (Auth0, Supabase Realtime, demo runner)
-├── eval/        injection suite (cases.py, injection_suite.py), LLM-in-the-loop suite (llm_cases.py, llm_suite.py), latency benchmark
+├── ui/          SvelteKit admin UI (Auth0, Supabase Realtime, demo runner) and the public, login-free /tour replay
+├── eval/        injection suite (cases.py, injection_suite.py), LLM-in-the-loop suite (llm_cases.py, llm_suite.py), latency benchmark, export_tour.py (records the public /tour page's data)
 ├── deploy/      Render (Dockerfile, start.sh, seed_fga.py, fga_db.py), Slack manifests, Auth0 setup, Supabase RLS SQL, anchor branch helpers, MCP client setup (`mcp/`), mock upstream and mock issuer
 ├── examples/    agent_login.py: a standard-library agent that logs in as itself
-├── scripts/     load_store.py, anchor.py, demo + eval runners, fga CLI wrapper
+├── scripts/     quickstart.sh, load_store.py, anchor.py, demo + eval runners, fga CLI wrapper
+├── .devcontainer/ GitHub Codespaces setup: the local stack, ready to run
 ├── .github/     scheduled workflow that anchors the audit chain head in git
 ├── DECISIONS.md one line per design choice and why
 └── PROGRESS.md  day-by-day build log

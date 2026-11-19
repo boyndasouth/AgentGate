@@ -17,8 +17,9 @@ if (env.AUTH_AUTH0_ISSUER && !env.AUTH_AUTH0_ISSUER.trim().endsWith('/')) {
 	console.error('[agentgate-ui] AUTH_AUTH0_ISSUER should end with "/" (e.g. https://dev-xxxx.us.auth0.com/)');
 }
 
-// Paths that work without an admin session.
-const PUBLIC = ['/auth', '/login', '/signout', '/denied'];
+// Paths that work without an admin session. /tour is a static replay of a recorded run: it reads no
+// broker data, so it needs no key and no login.
+const PUBLIC = ['/auth', '/login', '/signout', '/denied', '/tour'];
 
 const guard: Handle = async ({ event, resolve }) => {
 	const path = event.url.pathname;

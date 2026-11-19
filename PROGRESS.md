@@ -1,6 +1,6 @@
 # PROGRESS
 
-**Current day:** Days 14-16 are done and verified on the deployed stack (2026-11-18). Day 14-15: the MCP gateway (`day14.patch`, applied and pushed 2026-11-17). Day 16: a real remote MCP server (GitHub's) behind the gate, a runbook with no code change. Optional left: the second agent `research-bot`, a demo recording.
+**Current day:** Days 14-16 and the optional second agent are done and verified on the deployed stack (2026-11-18). Day 14-15: the MCP gateway (`day14.patch`, applied and pushed 2026-11-17). Day 16: a real remote MCP server (GitHub's) behind the gate, a runbook with no code change. Left: a demo recording.
 **Build status:** Days 0-13 are done and deployed. Days 14-15 add an MCP server at `/mcp` inside the broker: an MCP client logs in with its agent's Auth0 M2M token, sees only the tools its agent may use, and every call goes through the same gate as `POST /tools/{name}` (shared code, `gate.py`). Escalations block with progress notifications until a human decides in Slack. Registry tools can also forward to a remote MCP server (`upstream.kind = "mcp"`), imported disabled. **Verified 2026-11-18 on Render** with MCP Inspector and Claude Desktop (via `mcp-remote`), and with GitHub's read-only MCP server as a real upstream (Day 16).
 **Headline numbers after Days 14-15 (workspace):** **36/36 attacks stopped** (17 blocked, 19 escalated, 0 allowed, chain valid), unchanged after the gate moved into its own module. Day 14 tests 90/90 (twice in a row), Day 13 186/186, Day 12 191/191, registry tests 118/118. Allowed-call latency, local run of `latency_bench.py` after the change: +5.2 ms p50 / +6.5 ms p95 (not measured back to back with main this time; Day 13's runs were +4.1 to +4.3 / +6.1 to +6.5). Broker memory: 107 MB peak after importing the app, 124 MB peak after the full test runs (Render's container has 512 MB). LLM numbers are from Day 9.
 
@@ -20,6 +20,14 @@
 - [x] Shiwin: Claude Desktop through `mcp-remote` (2026-11-18). It needs `--transport http-only` and a fresh Auth0 token in the `AUTH_HEADER` env var (24 h lifetime); without that flag `mcp-remote` fell into OAuth discovery and failed on the broker's missing `/register` (404). The tool list showed exactly `query_customers`, `read_web` and `send_email` (`transfer_funds` hidden); `query_customers` was allowed. The first connect after idle took about 77 s (Render cold start). The server shows under plugins, not the "+" menu.
 - [x] Shiwin: the done check on Render (2026-11-18): `send_email` (egress, approval-only for `ext-bot`) called from Claude Desktop waited, the request appeared in Slack, and the call finished only after the approval by `user:shiwin` (audit feed). Claude can't see the wait; it only sees the final result.
 - [x] Note: from Claude Desktop a hidden tool can't be called at all (the model has no such tool), so no audit row exists for that attempt; the audited denial comes from a raw `tools/call` in Inspector.
+
+## research-bot: a second agent on Render (2026-11-18), no code change
+- [x] Setup: a new Auth0 M2M application authorized for the AgentGate API (not `ext-bot`'s: one client id maps to one agent), registered in the admin UI with owner `user:shiwin` (the same owner as `ext-bot`), one grant: `read_web` in mode "direct; once tainted, only allowlisted hosts" (`example.com`). Connected from MCP Inspector with its own token.
+- [x] Least privilege: `tools/list` showed only `read_web`; a raw `tools/call` for `send_email` was denied and audited against `research-bot`.
+- [x] Taint follows the agent: after an allowed `read_web` of `example.com` in one MCP session, a new MCP session within the token lifetime (10 minutes) got a denied read of a host that isn't on the allowlist, which a clean session would have allowed. The audit feed shows the carry-over. This is the Day 13 rule, now seen on Render with real Auth0.
+- [x] Independent kill switches: the kill switch on `research-bot` refused its next login (403) and `ext-bot` kept working (`query_customers` allowed from Claude Desktop).
+- Shiwin reported all three checks went as planned; audit ids weren't recorded here. Re-enabling uses the agent card or `PATCH /agents/{id}` with `{"status": "active"}` (old tokens stay dead, a fresh login works).
+- `research-bot` has its own client secret: keep it out of chat, rotate it or leave the agent disabled when not demoing.
 
 ## Day 16: a real remote MCP server (GitHub), no code change
 - [x] `POST /mcp-upstreams/import` against `https://api.githubcopilot.com/mcp/readonly` (read tools only) with `credential_ref = UPSTREAM_GITHUB_TOKEN`, a fine-grained token limited to public repositories (2026-11-18). The imported rows arrived disabled, `destructive`, tainting, no grants.
@@ -62,7 +70,7 @@
 - [x] Render suite 36/36 (17 blocked, 19 escalated), no regressions, chain valid; L01/L02 refused by the real Auth0 check (`eval/results/injection-render-20261117T182029Z.json`, committed) (2026-11-17)
 - [x] Real done check on Render, part 1 (2026-11-17): `ext-bot` (real Auth0 M2M client) refused with `may not hold` before its grant (audit 1286-1290), `grant_added` (1291), then four logins + allowed `query_customers` calls on ONE cached Auth0 token (1292-1300).
 - [x] Real done check, part 2 (2026-11-17): kill switch on `ext-bot` → the next login refused with 403. (A first attempt never reached the broker, so the agent stayed `active`; likely the UI confirm dialog was dismissed. The retry worked.)
-- [ ] Optional: second agent `research-bot` with its own M2M application (least privilege, taint following the agent across sessions, independent kill switches)
+- [x] Second agent `research-bot` with its own M2M application, checked on Render (2026-11-18): see the research-bot section below.
 
 ## Day 13: apply and deploy
 1. `git pull`, then `git apply --check day13.patch` and `git apply day13.patch`.
@@ -296,4 +304,4 @@
   - Render cold start takes about 1 minute.
 
 ## Next step
-The core build is complete and verified (Days 0-16). Remaining, in this order: (1) clean up Day 16 (disable or delete the `gh.*` tools, delete the GitHub token and the Render variable, kill-switch or rotate `ext-bot`); (2) apply `readme-mcp.patch` and the Day 16 README patch, commit, tag `v0.11.0-mcp-gateway`; (3) a 60-90 s recording of the Claude Desktop beat (tool list, hidden tool, injected issue, Slack approval, chain verified); (4) optional: the second agent `research-bot` with its own M2M application (Day 13 checklist).
+The core build is complete and verified (Days 0-16). Remaining, in this order: (1) clean up Day 16 (disable or delete the `gh.*` tools, delete the GitHub token and the Render variable, kill-switch or rotate `ext-bot`); (2) apply `readme-mcp.patch` and the Day 16 README patch, commit, tag `v0.11.0-mcp-gateway`; (3) a 60-90 s recording of the Claude Desktop beat (tool list, hidden tool, injected issue, Slack approval, chain verified); (4) done: the second agent `research-bot` (see its section). Nothing optional is left in the plan; a demo recording is the main thing to add.

@@ -448,6 +448,8 @@ agent ── Authorization: Bearer <Auth0 token> ──► POST /tokens/agent {t
 - **Refusals.** A token that can't be tied to Auth0's keys (wrong `alg`, unknown key, bad signature) is refused and logged, but not written to the audit chain, so junk can't flood it. A token Auth0 really signed but that isn't usable (another audience, expired, a user's token, an unmapped client) is refused **and** audited.
 - **Auth0's Free plan counts M2M tokens** (about 1,000 a month). Logging in to AgentGate doesn't use one; asking Auth0 for a token does. [`examples/agent_login.py`](examples/agent_login.py) is a standard-library agent that caches its Auth0 token and shows the whole flow; setup is in [`deploy/auth0/README.md`](deploy/auth0/README.md).
 
+Checked on Render with two real agents: `ext-bot` and a second one, `research-bot`, each with its own Auth0 application. `research-bot` sees and may use only `read_web` (hosts on an allowlist once its session is tainted); after it read a page, a new session of the same agent still refused a host outside the allowlist, so taint followed the agent; and switching `research-bot` off refused its next login while `ext-bot` kept working.
+
 `.\scripts\test_day13.ps1` runs the checks against the local stack and a mock issuer (`deploy/mock-issuer/server.py`, in compose), including the done check: a standalone script with only a client id and secret gets a token and calls a granted tool; wrong audience, expired token, `alg` swap and an unmapped client are refused; the kill switch kills the agent's live tokens.
 
 ### Use it from an MCP client (Day 14)

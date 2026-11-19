@@ -6,6 +6,8 @@
 
 ---
 
+**In plain English:** AI assistants can now act for you (read websites, send email, pay bills), which is risky: trick one and it does what the trickster says. AgentGate is the security desk every assistant has to pass. Each one gets a badge that expires in 10 minutes and opens only the doors its job needs; risky moves (email to strangers, big payments) wait for a person to click Approve; and every decision goes into a logbook where editing one entry breaks the seal on the rest. The demo below shows a booby-trapped web page tricking an assistant into emailing out a customer list, and the system stopping it.
+
 ## Demo: six beats, three minutes
 
 Run from the admin UI's demo runner with Slack open beside it (scripted gate calls, so every run is the same; `scripts/demo_inject.ps1` does the injection beat from a terminal).

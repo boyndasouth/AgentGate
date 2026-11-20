@@ -18,8 +18,9 @@ if (env.AUTH_AUTH0_ISSUER && !env.AUTH_AUTH0_ISSUER.trim().endsWith('/')) {
 }
 
 // Paths that work without an admin session. /tour is a static replay of a recorded run: it reads no
-// broker data, so it needs no key and no login.
-const PUBLIC = ['/auth', '/login', '/signout', '/denied', '/tour'];
+// broker data, so it needs no key and no login. /api/sandbox is the tour's "Try it yourself" panel: fixed
+// scripted runs against sandbox agents only (lib/server/sandbox.ts); off unless AGENTGATE_SANDBOX=1.
+const PUBLIC = ['/auth', '/login', '/signout', '/denied', '/tour', '/api/sandbox'];
 
 const guard: Handle = async ({ event, resolve }) => {
 	const path = event.url.pathname;

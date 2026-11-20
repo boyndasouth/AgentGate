@@ -50,7 +50,7 @@ interface ToolData {
 	expires_at?: string | null;
 }
 
-class Run {
+export class Run {
 	steps: Step[] = [];
 	constructor(public scenario: string) {}
 

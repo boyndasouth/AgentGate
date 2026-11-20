@@ -1,4 +1,5 @@
 <script lang="ts">
+	import TourSandbox from '$lib/components/TourSandbox.svelte';
 	import { onDestroy } from 'svelte';
 	import Logo from '$lib/components/Logo.svelte';
 	import tourData from '$lib/tour-data.json';
@@ -376,6 +377,8 @@
 		</div>
 		<p class="muted small">Arguments are never stored: the log holds only keyed hashes of them. The recorded customer list is just a row count.</p>
 	</section>
+
+	<TourSandbox />
 
 	<section id="try" class="trycards">
 		<h2>Try it yourself</h2>

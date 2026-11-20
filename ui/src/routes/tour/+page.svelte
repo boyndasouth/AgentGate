@@ -2,22 +2,38 @@
 	import { onDestroy } from 'svelte';
 	import Logo from '$lib/components/Logo.svelte';
 	import tourData from '$lib/tour-data.json';
-	import type { Tour, TourBeat } from '$lib/tour';
+	import type { Tour, TourAuditRow, TourBeat } from '$lib/tour';
 
 	const tour = tourData as unknown as Tour;
-	const beats: TourBeat[] = tour.beats;
-	const NUMBERS = beats.length; // the last panel, "The numbers", is not a beat in the recording
+	// The finance-team run is the core recording (it has the tamper and numbers beats). Any extra agents the
+	// recorder has saved show up as more views of the same player; with none recorded, the page is unchanged.
+	type View = { id: string; title: string; blurb: string; core: boolean; beats: TourBeat[]; audit: TourAuditRow[] };
+	const views: View[] = [
+		{
+			id: 'finance',
+			title: 'Finance team',
+			blurb: 'The original run: three agents, a booby-trapped web page, tampering and a kill switch.',
+			core: true,
+			beats: tour.beats,
+			audit: tour.audit
+		},
+		...(tour.scenarios ?? []).map((s): View => ({ id: s.id, title: s.title, blurb: s.blurb, core: false, beats: s.beats, audit: s.audit }))
+	];
+	let vi = $state(0);
+	const view = $derived(views[vi]);
+	const beats = $derived(view.beats);
+	const END = $derived(beats.length); // for the core run, the panel after the last beat is "The numbers"
 
 	const REPO = 'https://github.com/boyndasouth/AgentGate';
 	const CODESPACES = 'https://codespaces.new/boyndasouth/AgentGate?quickstart=1';
 
 	let sel = $state(0);
-	let shown = $state(beats[0]?.steps.length ?? 0); // steps revealed in the selected beat
+	let shown = $state(tour.beats[0]?.steps.length ?? 0); // steps revealed in the selected beat
 	let playing = $state(false);
 	let hl = $state<number | null>(null);
 	let timer: ReturnType<typeof setTimeout> | null = null;
 
-	const cur = $derived(sel < NUMBERS ? beats[sel] : null);
+	const cur = $derived(sel < END ? beats[sel] : null);
 	const reduced = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 	function stop() {
@@ -28,21 +44,29 @@
 	function pick(i: number) {
 		stop();
 		sel = i;
-		shown = i < NUMBERS ? beats[i].steps.length : 0;
+		shown = i < END ? beats[i].steps.length : 0;
+		hl = null;
+	}
+	function pickView(i: number) {
+		stop();
+		vi = i;
+		sel = 0;
+		shown = views[i].beats[0]?.steps.length ?? 0;
 		hl = null;
 	}
 	function tick() {
 		if (!playing) return;
-		if (sel < NUMBERS && shown < beats[sel].steps.length) {
+		if (sel < END && shown < beats[sel].steps.length) {
 			shown += 1;
 			const s = beats[sel].steps[shown - 1];
 			hl = s.audit_id;
 			timer = setTimeout(tick, 800);
-		} else if (sel < NUMBERS) {
+		} else if (sel < END) {
+			if (!view.core && sel === END - 1) return stop(); // extra agents have no "numbers" panel: stay on the last beat
 			sel += 1;
 			shown = 0;
 			hl = null;
-			if (sel >= NUMBERS) return stop();
+			if (sel >= END) return stop();
 			timer = setTimeout(tick, 900);
 		}
 	}
@@ -114,6 +138,9 @@
 		<p class="lede">
 			Below is a real run, played back step by step: a booby-trapped web page tricks an AI assistant into trying
 			to email out a customer list, and AgentGate stops it. New here? Read the short explainer first.
+			{#if views.length > 1}
+				Then pick another kind of agent below: the same gate, with agents and tools that were added through the API.
+			{/if}
 		</p>
 		<div class="row">
 			<button class="btn primary" onclick={play}>{playing ? 'Restart' : 'Play the run'}</button>
@@ -194,6 +221,25 @@
 		</section>
 	{/if}
 
+	{#if views.length > 1}
+		<section class="scenes" aria-labelledby="sceneh">
+			<div class="scenes-head">
+				<h2 id="sceneh">Same gate, different agents</h2>
+				<p class="muted small">
+					Nothing in the broker was changed for these: each agent, its tools and its permissions were registered through the admin API, then run against the real gate.
+				</p>
+			</div>
+			<div class="scene-row">
+				{#each views as v, i}
+					<button class="scene" class:on={vi === i} aria-pressed={vi === i} onclick={() => pickView(i)}>
+						<strong>{v.title}</strong>
+						<span class="muted small">{v.blurb}</span>
+					</button>
+				{/each}
+			</div>
+		</section>
+	{/if}
+
 	<section class="player">
 		<nav class="rail" aria-label="Demo beats">
 			{#each beats as b, i}
@@ -203,16 +249,18 @@
 					{#if b.outcome}<span class="pill tiny {b.outcome}">{b.outcome}</span>{/if}
 				</button>
 			{/each}
-			<button class="beatbtn" class:on={sel === NUMBERS} aria-current={sel === NUMBERS ? 'step' : undefined} onclick={() => pick(NUMBERS)}>
-				<span class="n">{NUMBERS + 1}</span>
-				<span class="t1">The numbers</span>
-			</button>
+			{#if view.core}
+				<button class="beatbtn" class:on={sel === END} aria-current={sel === END ? 'step' : undefined} onclick={() => pick(END)}>
+					<span class="n">{END + 1}</span>
+					<span class="t1">The numbers</span>
+				</button>
+			{/if}
 		</nav>
 
 		<div class="stage card">
 			{#if cur}
 				<div class="card-head"><h2>Beat {cur.id}: {cur.title}</h2></div>
-				<p class="plainwords"><span class="eyebrow"><b>In plain words</b></span>{PLAIN[cur.title] ?? cur.what}</p>
+				<p class="plainwords"><span class="eyebrow"><b>In plain words</b></span>{cur.plain ?? PLAIN[cur.title] ?? cur.what}</p>
 				<p class="legend2 muted small"><span class="pill tiny allow">allow</span> let through <span class="pill tiny escalate">escalate</span> held for a person <span class="pill tiny deny">deny</span> refused</p>
 
 				<ol class="steps2">
@@ -274,7 +322,7 @@
 					<p class="says"><b>{cur.note}</b></p>
 				{/if}
 			{:else}
-				<div class="card-head"><h2>Beat {NUMBERS + 1}: The numbers</h2></div>
+				<div class="card-head"><h2>Beat {END + 1}: The numbers</h2></div>
 				<p class="plainwords"><span class="eyebrow"><b>In plain words</b></span>We also threw 36 different tricks at the system, always assuming the assistant obeys every one. None got through: 17 were refused outright and 19 were held for a person. And all this checking is quick: it adds about 1/200 of a second per call.</p>
 				<dl class="facts">
 					{#if suite}
@@ -302,7 +350,7 @@
 
 	<section class="card auditcard" aria-labelledby="audith">
 		<div class="card-head">
-			<h2 id="audith">Audit log written by this run <span class="count">{tour.audit.length}</span></h2>
+			<h2 id="audith">Audit log written by this run <span class="count">{view.audit.length}</span></h2>
 			<span class="muted small mono">chain head {tour.chain.head}…</span>
 		</div>
 		<p class="muted small">Every row is one decision. Each row carries a fingerprint (hash) that includes the row before it, so quietly editing one row breaks the fingerprints from there on.</p>
@@ -312,7 +360,7 @@
 					<tr><th>#</th><th>Event</th><th>Agent</th><th>Tool</th><th>Decision</th><th>Reason</th><th>Hash</th></tr>
 				</thead>
 				<tbody>
-					{#each tour.audit as r}
+					{#each view.audit as r}
 						<tr id="row-{r.id}" class="d-{r.decision}" class:tainted={r.tainted} class:broken={phase === 'broken' && tour.tamper && r.id === tour.tamper.row_id} class:hl={hl === r.id}>
 							<td class="mono">{r.id}</td>
 							<td class="mono small">{r.event}</td>
@@ -373,6 +421,18 @@
 		.ticker :global(.t) { border-right: none; border-bottom: 1px solid var(--line); }
 	}
 	.ticker :global(.num) { justify-content: flex-start; }
+
+	.scenes { display: grid; gap: 12px; }
+	.scenes-head h2 { margin: 0 0 4px; }
+	.scenes-head p { margin: 0; max-width: 70ch; }
+	.scene-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+	.scene {
+		display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer; background: transparent; color: var(--text);
+		border: 1px solid var(--line); padding: 12px 14px; font: inherit; transition: border-color 0.2s, background 0.2s;
+	}
+	.scene strong { font-size: 15px; letter-spacing: -0.01em; }
+	.scene:hover { border-color: var(--accent); }
+	.scene.on { border-color: var(--accent); background: rgba(212, 255, 58, 0.06); box-shadow: inset 3px 0 0 var(--accent); }
 
 	.player { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 18px; align-items: start; }
 	@media (max-width: 820px) { .player { grid-template-columns: 1fr; } }

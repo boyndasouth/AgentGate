@@ -25,6 +25,8 @@ export interface TourBeat {
 	title: string;
 	what: string;
 	note: string;
+	/** Plain-language caption; falls back to the page's own caption for the core beats. */
+	plain?: string;
 	outcome: TourOutcome | '';
 	steps: TourStep[];
 	approval?: TourApproval;
@@ -43,6 +45,17 @@ export interface TourAuditRow {
 	hash: string;
 }
 
+/** Another kind of agent behind the same gate, recorded by eval/tour_scenarios.py. */
+export interface TourScenario {
+	id: string;
+	title: string;
+	blurb: string;
+	agent: string;
+	tools: string[];
+	beats: TourBeat[];
+	audit: TourAuditRow[];
+}
+
 export interface Tour {
 	schema: number;
 	recorded_at: string;
@@ -56,4 +69,6 @@ export interface Tour {
 	tamper: { row_id: number; edit_caught: boolean; first_broken_id: number; restored_valid: boolean; rows_checked: number } | null;
 	audit: TourAuditRow[];
 	chain: { valid: boolean; checked: number; head: string };
+	/** Extra agents (support, devops, ...). Absent until eval/export_tour.py has recorded them. */
+	scenarios?: TourScenario[];
 }

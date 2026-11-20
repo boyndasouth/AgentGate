@@ -4,6 +4,8 @@
   python eval/export_tour.py --psql-cmd "docker compose exec -T broker-postgres psql -U agentgate -d agentgate"
   python eval/export_tour.py --target render         # deployed broker (.env.render); see below
   python eval/export_tour.py --show --out -          # just watch the beats in the terminal, write nothing
+  python eval/export_tour.py --scenarios none        # only the finance-team beats
+  python eval/export_tour.py --scenarios support     # finance team + one extra scenario (support, devops)
 
 Plays the same scripted gate calls as the admin UI's demo runner and scripts/demo_inject.ps1 (no LLM),
 so the recording is the same every time. Approvals are decided through the admin API (Slack is not
@@ -14,6 +16,10 @@ Beat 4 (tamper evidence) edits one audit row in Postgres and puts it back, so it
 service). Without it that beat is left out of the recording and the page says so. The row is restored
 in a `finally`, and the script exits 1 if the chain doesn't verify afterwards.
 
+Extra scenarios (eval/tour_scenarios.py): other kinds of agents, registered through the admin API and
+recorded the same way (default: support, devops). They forward to the compose mock-upstream, so they run only
+against the local stack; with --target render the ones already in the data file are kept as they are.
+
 Nothing secret is written: no keys, no tokens, no argument values (the audit log holds only HMACs of
 them), and the customer list is reduced to a row count. Needs only the standard library.
 Run it on the local stack: against Render it appends about 40 rows to the real audit chain.
@@ -23,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -168,6 +175,10 @@ def main() -> int:
                     help="command that opens psql on the broker's database (needed for beat 4)")
     ap.add_argument("--out", default=str(OUT), help="where to write the snapshot, or - to write nothing")
     ap.add_argument("--show", action="store_true", help="print each step as it happens")
+    ap.add_argument("--scenarios", default="support,devops",
+                    help="extra agent scenarios to record (comma-separated: support, devops) or none")
+    ap.add_argument("--mock-url", default=os.environ.get("MOCK_UPSTREAM_URL", "http://mock-upstream:9090"),
+                    help="how the BROKER reaches the mock upstream (the compose service name)")
     args = ap.parse_args()
 
     cfg = load_config(args.target)
@@ -297,6 +308,23 @@ def main() -> int:
               "hash": (e.get("hash") or "")[:12]} for e in rows]
 
     final = g.request("GET", "/audit/verify")[1]
+
+    # ---- extra scenarios: other kinds of agents behind the same gate --------------------------
+    scenarios: list[dict] = []
+    wanted = [n.strip() for n in args.scenarios.split(",") if n.strip() and n.strip() != "none"]
+    if wanted and args.target == "local":
+        import tour_scenarios
+        scenarios = tour_scenarios.record(g, wanted, args.show, args.mock_url)
+    elif wanted:
+        print("note: extra scenarios skipped on --target render (the mock upstream is local only); "
+              "keeping the ones already in the data file", file=sys.stderr)
+    if not scenarios and args.out != "-" and Path(args.out).exists():
+        try:
+            scenarios = json.loads(Path(args.out).read_text(encoding="utf-8")).get("scenarios") or []
+        except ValueError:
+            scenarios = []
+    after = g.request("GET", "/audit/verify")[1]
+
     snapshot = {
         "schema": 1,
         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -310,11 +338,15 @@ def main() -> int:
         "chain": {"valid": bool(final.get("valid")), "checked": final.get("checked"),
                   "head": (final.get("head_hash") or "")[:16]},
     }
+    if scenarios:
+        snapshot["scenarios"] = scenarios
     if args.out != "-":
         Path(args.out).write_text(json.dumps(snapshot, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     where = "nothing written" if args.out == "-" else f"wrote {args.out}"
-    print(f"\n{where}: {len(rec.beats)} beats, {len(audit)} audit rows, chain valid={snapshot['chain']['valid']}")
-    return 0 if snapshot["chain"]["valid"] else 1
+    extra = f", {len(scenarios)} extra scenario(s)" if scenarios else ""
+    print(f"\n{where}: {len(rec.beats)} beats, {len(audit)} audit rows{extra}, "
+          f"chain valid={snapshot['chain']['valid']} (after the extra scenarios: {bool(after.get('valid'))})")
+    return 0 if snapshot["chain"]["valid"] and after.get("valid") else 1
 
 
 if __name__ == "__main__":

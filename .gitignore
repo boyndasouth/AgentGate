@@ -38,3 +38,6 @@ desktop.ini
 .agentgate-token-cache.json
 .env.agent2
 .agentgate-token-cache-2.json
+
+header-two.ps1
+header.ps1

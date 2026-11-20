@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "recorded_at": "2026-11-19T03:14:28Z",
+ "recorded_at": "2026-11-20T01:02:42Z",
  "target": "local",
  "health": {
   "openfga": true
@@ -32,7 +32,7 @@
    "steps": [
     {
      "actor": "accounts payable",
-     "action": "open invoice INV-2515F375: $40 to acct_acme_supplies",
+     "action": "open invoice INV-453B72F3: $40 to acct_acme_supplies",
      "outcome": "allow",
      "http": 201,
      "reason": "added by an admin; the agent can only pay it, never create it",
@@ -48,17 +48,17 @@
      "reason": "short-lived token, 10 minutes, only these scopes",
      "audit_id": null,
      "session_tainted": false,
-     "ms": 11.1
+     "ms": 162.2
     },
     {
      "actor": "finance",
-     "action": "transfer_funds $40 to acct_acme_supplies (invoice INV-2515F375)",
+     "action": "transfer_funds $40 to acct_acme_supplies (invoice INV-453B72F3)",
      "outcome": "allow",
      "http": 200,
      "reason": "policy: can_invoke",
-     "audit_id": 3,
+     "audit_id": 6412,
      "session_tainted": false,
-     "ms": 8.2
+     "ms": 42.7
     }
    ],
    "outcome": "allow",
@@ -71,7 +71,7 @@
    "steps": [
     {
      "actor": "accounts payable",
-     "action": "open invoice INV-14496DDB: $5,000 to acct_acme_supplies",
+     "action": "open invoice INV-C176BAF3: $5,000 to acct_acme_supplies",
      "outcome": "allow",
      "http": 201,
      "reason": "added by an admin; the agent can only pay it, never create it",
@@ -87,17 +87,17 @@
      "reason": "short-lived token, 10 minutes, only these scopes",
      "audit_id": null,
      "session_tainted": false,
-     "ms": 5.5
+     "ms": 63.6
     },
     {
      "actor": "finance",
-     "action": "transfer_funds $5,000 to acct_acme_supplies (invoice INV-14496DDB)",
+     "action": "transfer_funds $5,000 to acct_acme_supplies (invoice INV-C176BAF3)",
      "outcome": "escalate",
      "http": 202,
      "reason": "policy: needs human approval (amount 5000)",
-     "audit_id": 6,
+     "audit_id": 6415,
      "session_tainted": false,
-     "ms": 10.8
+     "ms": 336.0
     },
     {
      "actor": "human",
@@ -130,8 +130,8 @@
     "args": {
      "amount": "5000",
      "to_account": "acct_acme_supplies",
-     "memo": "Invoice INV-14496DDB",
-     "invoice_id": "INV-14496DDB"
+     "memo": "Invoice INV-C176BAF3",
+     "invoice_id": "INV-C176BAF3"
     }
    }
   },
@@ -148,7 +148,7 @@
      "reason": "short-lived token, 10 minutes, only these scopes",
      "audit_id": null,
      "session_tainted": false,
-     "ms": 6.0
+     "ms": 54.4
     },
     {
      "actor": "researcher",
@@ -156,9 +156,9 @@
      "outcome": "allow",
      "http": 200,
      "reason": "policy: can_invoke",
-     "audit_id": 9,
+     "audit_id": 6418,
      "session_tainted": true,
-     "ms": 6.9
+     "ms": 67.1
     },
     {
      "actor": "mailer",
@@ -168,7 +168,7 @@
      "reason": "short-lived token, 10 minutes, only these scopes",
      "audit_id": null,
      "session_tainted": true,
-     "ms": 9.2
+     "ms": 70.3
     },
     {
      "actor": "mailer",
@@ -176,9 +176,9 @@
      "outcome": "allow",
      "http": 200,
      "reason": "policy: can_invoke",
-     "audit_id": 12,
+     "audit_id": 6421,
      "session_tainted": true,
-     "ms": 7.6
+     "ms": 55.5
     },
     {
      "actor": "mailer",
@@ -186,9 +186,9 @@
      "outcome": "escalate",
      "http": 202,
      "reason": "policy: needs human approval (session tainted by read_web, recipient domain 'partner-archive.example' is not on the allowlist)",
-     "audit_id": 13,
+     "audit_id": 6422,
      "session_tainted": true,
-     "ms": 9.4
+     "ms": 278.7
     },
     {
      "actor": "human",
@@ -223,7 +223,7 @@
    "steps": [
     {
      "actor": "insider",
-     "action": "UPDATE audit row 13: escalate -> allow",
+     "action": "UPDATE audit row 6422: escalate -> allow",
      "outcome": "info",
      "http": 200,
      "reason": "edited directly in the database; the stored hashes were left alone",
@@ -236,14 +236,14 @@
      "action": "GET /audit/verify",
      "outcome": "deny",
      "http": 200,
-     "reason": "chain broken at row 13",
+     "reason": "chain broken at row 6422",
      "audit_id": null,
      "session_tainted": null,
      "ms": null
     },
     {
      "actor": "insider",
-     "action": "restore row 13",
+     "action": "restore row 6422",
      "outcome": "info",
      "http": 200,
      "reason": "original decision and reason put back",
@@ -256,7 +256,7 @@
      "action": "GET /audit/verify",
      "outcome": "allow",
      "http": 200,
-     "reason": "chain valid, 14 rows",
+     "reason": "chain valid, 6423 rows",
      "audit_id": null,
      "session_tainted": null,
      "ms": null
@@ -278,7 +278,7 @@
      "reason": "short-lived token, 10 minutes, only these scopes",
      "audit_id": null,
      "session_tainted": false,
-     "ms": 8.5
+     "ms": 16.3
     },
     {
      "actor": "mailer",
@@ -286,9 +286,9 @@
      "outcome": "allow",
      "http": 200,
      "reason": "policy: can_invoke",
-     "audit_id": 16,
+     "audit_id": 6425,
      "session_tainted": false,
-     "ms": 5.4
+     "ms": 54.8
     },
     {
      "actor": "admin",
@@ -306,9 +306,9 @@
      "outcome": "deny",
      "http": 401,
      "reason": "agent disabled by kill switch",
-     "audit_id": 18,
+     "audit_id": 6427,
      "session_tainted": false,
-     "ms": 2.5
+     "ms": 49.9
     },
     {
      "actor": "admin",
@@ -326,41 +326,41 @@
   }
  ],
  "tamper": {
-  "row_id": 13,
+  "row_id": 6422,
   "before_valid": true,
   "edit_caught": true,
-  "first_broken_id": 13,
+  "first_broken_id": 6422,
   "restored_valid": true,
-  "rows_checked": 14
+  "rows_checked": 6423
  },
  "audit": [
   {
-   "id": 1,
-   "ts": "2026-11-19T03:14:27.308377Z",
+   "id": 6410,
+   "ts": "2026-11-20T01:02:33.421947Z",
    "event": "invoice_created",
    "agent": null,
    "tool": null,
    "decision": "info",
-   "reason": "invoice INV-2515F375 for 40.00 added by admin-api",
+   "reason": "invoice INV-453B72F3 for 40.00 added by admin-api",
    "approver": null,
    "tainted": null,
-   "hash": "4ab0aa75f266"
+   "hash": "fbfeca87a887"
   },
   {
-   "id": 2,
-   "ts": "2026-11-19T03:14:27.319809Z",
+   "id": 6411,
+   "ts": "2026-11-20T01:02:33.585528Z",
    "event": "token_issued",
    "agent": "finance",
    "tool": null,
    "decision": "info",
-   "reason": "scopes: transfer_funds; task: Pay invoice INV-2515F375",
+   "reason": "scopes: transfer_funds; task: Pay invoice INV-453B72F3",
    "approver": null,
    "tainted": false,
-   "hash": "038dbceb64fe"
+   "hash": "af1f8bf28780"
   },
   {
-   "id": 3,
-   "ts": "2026-11-19T03:14:27.328236Z",
+   "id": 6412,
+   "ts": "2026-11-20T01:02:33.628662Z",
    "event": "tool_call",
    "agent": "finance",
    "tool": "transfer_funds",
@@ -368,59 +368,59 @@
    "reason": "policy: can_invoke",
    "approver": null,
    "tainted": false,
-   "hash": "3a708d8ae418"
+   "hash": "f1c5af0067e2"
   },
   {
-   "id": 4,
-   "ts": "2026-11-19T03:14:27.331030Z",
+   "id": 6413,
+   "ts": "2026-11-20T01:02:33.638626Z",
    "event": "invoice_created",
    "agent": null,
    "tool": null,
    "decision": "info",
-   "reason": "invoice INV-14496DDB for 5000.00 added by admin-api",
+   "reason": "invoice INV-C176BAF3 for 5000.00 added by admin-api",
    "approver": null,
    "tainted": null,
-   "hash": "8c0cb5d8f2d3"
+   "hash": "04426504e41e"
   },
   {
-   "id": 5,
-   "ts": "2026-11-19T03:14:27.336611Z",
+   "id": 6414,
+   "ts": "2026-11-20T01:02:33.703657Z",
    "event": "token_issued",
    "agent": "finance",
    "tool": null,
    "decision": "info",
-   "reason": "scopes: transfer_funds; task: Pay invoice INV-14496DDB",
+   "reason": "scopes: transfer_funds; task: Pay invoice INV-C176BAF3",
    "approver": null,
    "tainted": false,
-   "hash": "38e0da90f455"
+   "hash": "c0158ec7baa8"
   },
   {
-   "id": 6,
-   "ts": "2026-11-19T03:14:27.347291Z",
+   "id": 6415,
+   "ts": "2026-11-20T01:02:33.779213Z",
    "event": "tool_call",
    "agent": "finance",
    "tool": "transfer_funds",
    "decision": "escalate",
-   "reason": "policy: needs human approval (amount 5000); approval 8d380d4c-405e-44cc-a6d1-faba07267184",
+   "reason": "policy: needs human approval (amount 5000); approval ec23592a-d84d-4fbc-8f64-03da28f6f010",
    "approver": null,
    "tainted": false,
-   "hash": "f3626e478574"
+   "hash": "1ca52bd9cfd9"
   },
   {
-   "id": 7,
-   "ts": "2026-11-19T03:14:27.356264Z",
+   "id": 6416,
+   "ts": "2026-11-20T01:02:34.105004Z",
    "event": "approval_resolved",
    "agent": "finance",
    "tool": "transfer_funds",
    "decision": "deny",
-   "reason": "denied by user:shiwin via admin-api; approval 8d380d4c-405e-44cc-a6d1-faba07267184",
+   "reason": "denied by user:shiwin via admin-api; approval ec23592a-d84d-4fbc-8f64-03da28f6f010",
    "approver": "user:shiwin via admin-api",
    "tainted": false,
-   "hash": "94b697ff1596"
+   "hash": "eb5f68ff6cfc"
   },
   {
-   "id": 8,
-   "ts": "2026-11-19T03:14:27.364379Z",
+   "id": 6417,
+   "ts": "2026-11-20T01:02:34.398746Z",
    "event": "token_issued",
    "agent": "researcher",
    "tool": null,
@@ -428,11 +428,11 @@
    "reason": "scopes: read_web; task: Summarise recent agent-security news",
    "approver": null,
    "tainted": false,
-   "hash": "9bbfdec0b3f2"
+   "hash": "291c4fafba38"
   },
   {
-   "id": 9,
-   "ts": "2026-11-19T03:14:27.369865Z",
+   "id": 6418,
+   "ts": "2026-11-20T01:02:34.453800Z",
    "event": "tool_call",
    "agent": "researcher",
    "tool": "read_web",
@@ -440,11 +440,11 @@
    "reason": "policy: can_invoke",
    "approver": null,
    "tainted": false,
-   "hash": "64bc06b127e5"
+   "hash": "f65a3a007dd7"
   },
   {
-   "id": 10,
-   "ts": "2026-11-19T03:14:27.371431Z",
+   "id": 6419,
+   "ts": "2026-11-20T01:02:34.459666Z",
    "event": "session_tainted",
    "agent": "researcher",
    "tool": "read_web",
@@ -452,11 +452,11 @@
    "reason": "untrusted content from read_web; high-risk tools now need human approval",
    "approver": null,
    "tainted": true,
-   "hash": "6adec082648b"
+   "hash": "69f1ae1c6047"
   },
   {
-   "id": 11,
-   "ts": "2026-11-19T03:14:27.380658Z",
+   "id": 6420,
+   "ts": "2026-11-20T01:02:34.534860Z",
    "event": "token_issued",
    "agent": "mailer",
    "tool": null,
@@ -464,11 +464,11 @@
    "reason": "scopes: query_customers read_inbox send_email; task: Act on the research notes",
    "approver": null,
    "tainted": true,
-   "hash": "ef7750823192"
+   "hash": "3a5152bc8e19"
   },
   {
-   "id": 12,
-   "ts": "2026-11-19T03:14:27.387823Z",
+   "id": 6421,
+   "ts": "2026-11-20T01:02:34.589550Z",
    "event": "tool_call",
    "agent": "mailer",
    "tool": "query_customers",
@@ -476,35 +476,35 @@
    "reason": "policy: can_invoke",
    "approver": null,
    "tainted": true,
-   "hash": "33d355315791"
+   "hash": "a16fa467195f"
   },
   {
-   "id": 13,
-   "ts": "2026-11-19T03:14:27.397787Z",
+   "id": 6422,
+   "ts": "2026-11-20T01:02:34.653405Z",
    "event": "tool_call",
    "agent": "mailer",
    "tool": "send_email",
    "decision": "escalate",
-   "reason": "policy: needs human approval (session tainted by read_web, recipient domain 'partner-archive.example' is not on the allowlist); approval 65e557fb-22a5-4925-8e71-ac8cf1c23355",
+   "reason": "policy: needs human approval (session tainted by read_web, recipient domain 'partner-archive.example' is not on the allowlist); approval f1570e35-8ce3-42b1-aab9-60dd3458c0f8",
    "approver": null,
    "tainted": true,
-   "hash": "a7256fbd746e"
+   "hash": "9662057f4402"
   },
   {
-   "id": 14,
-   "ts": "2026-11-19T03:14:27.404604Z",
+   "id": 6423,
+   "ts": "2026-11-20T01:02:34.931336Z",
    "event": "approval_resolved",
    "agent": "mailer",
    "tool": "send_email",
    "decision": "deny",
-   "reason": "denied by user:shiwin via admin-api; approval 65e557fb-22a5-4925-8e71-ac8cf1c23355",
+   "reason": "denied by user:shiwin via admin-api; approval f1570e35-8ce3-42b1-aab9-60dd3458c0f8",
    "approver": "user:shiwin via admin-api",
    "tainted": true,
-   "hash": "33467ca00aac"
+   "hash": "fb1ff2c61dd5"
   },
   {
-   "id": 15,
-   "ts": "2026-11-19T03:14:27.513086Z",
+   "id": 6424,
+   "ts": "2026-11-20T01:02:36.871274Z",
    "event": "token_issued",
    "agent": "mailer",
    "tool": null,
@@ -512,11 +512,11 @@
    "reason": "scopes: query_customers; task: Prepare the weekly newsletter",
    "approver": null,
    "tainted": false,
-   "hash": "c46cd25d64a8"
+   "hash": "e93aee25b4e1"
   },
   {
-   "id": 16,
-   "ts": "2026-11-19T03:14:27.518579Z",
+   "id": 6425,
+   "ts": "2026-11-20T01:02:36.927385Z",
    "event": "tool_call",
    "agent": "mailer",
    "tool": "query_customers",
@@ -524,11 +524,11 @@
    "reason": "policy: can_invoke",
    "approver": null,
    "tainted": false,
-   "hash": "1d8ddcbce7ca"
+   "hash": "8067ae625018"
   },
   {
-   "id": 17,
-   "ts": "2026-11-19T03:14:27.522890Z",
+   "id": 6426,
+   "ts": "2026-11-20T01:02:36.980314Z",
    "event": "agent_disabled",
    "agent": "mailer",
    "tool": null,
@@ -536,11 +536,11 @@
    "reason": "demo: kill switch",
    "approver": null,
    "tainted": null,
-   "hash": "86648e661f56"
+   "hash": "75046ec7527b"
   },
   {
-   "id": 18,
-   "ts": "2026-11-19T03:14:27.526194Z",
+   "id": 6427,
+   "ts": "2026-11-20T01:02:37.031747Z",
    "event": "tool_call",
    "agent": "mailer",
    "tool": "query_customers",
@@ -548,11 +548,11 @@
    "reason": "agent disabled by kill switch",
    "approver": null,
    "tainted": false,
-   "hash": "8a3ad8584ad0"
+   "hash": "f76fdf62e7bc"
   },
   {
-   "id": 19,
-   "ts": "2026-11-19T03:14:28.832051Z",
+   "id": 6428,
+   "ts": "2026-11-20T01:02:38.342759Z",
    "event": "agent_enabled",
    "agent": "mailer",
    "tool": null,
@@ -560,12 +560,1040 @@
    "reason": "re-enabled by admin",
    "approver": null,
    "tainted": null,
-   "hash": "dfecccb1704f"
+   "hash": "6f6279bcfc98"
   }
  ],
  "chain": {
   "valid": true,
-  "checked": 19,
-  "head": "dfecccb1704f67eb"
- }
+  "checked": 6428,
+  "head": "6f6279bcfc989944"
+ },
+ "scenarios": [
+  {
+   "id": "support",
+   "title": "Customer support agent",
+   "blurb": "Looks up orders, emails customers, asks for refunds. A poisoned ticket tries to move money and leak data.",
+   "agent": "tour-support",
+   "tools": [
+    "crm.lookup_order",
+    "crm.read_ticket",
+    "crm.refund",
+    "support.reply"
+   ],
+   "beats": [
+    {
+     "id": 1,
+     "title": "Onboard in minutes",
+     "what": "A support agent and four tools are added through the admin API. No broker code changes.",
+     "steps": [
+      {
+       "actor": "admin",
+       "action": "register agent tour-support (owner user:shiwin)",
+       "outcome": "info",
+       "http": 201,
+       "reason": "an identity with a human owner and no grants: it can do nothing yet",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "register tool crm.lookup_order",
+       "outcome": "info",
+       "http": 201,
+       "reason": "read tool; its output does not taint the session; the broker holds the upstream credential, the agent never sees it",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "register tool crm.read_ticket",
+       "outcome": "info",
+       "http": 201,
+       "reason": "read tool; its output taints the session; the broker holds the upstream credential, the agent never sees it",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "register tool crm.refund",
+       "outcome": "info",
+       "http": 201,
+       "reason": "money tool; its output does not taint the session; the broker holds the upstream credential, the agent never sees it",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "register tool support.reply",
+       "outcome": "info",
+       "http": 201,
+       "reason": "egress tool; its output does not taint the session; the broker holds the upstream credential, the agent never sees it",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "approver for support.reply: user:shiwin",
+       "outcome": "info",
+       "http": 201,
+       "reason": "who may click Approve for this tool",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "approver for crm.refund: user:shiwin",
+       "outcome": "info",
+       "http": 201,
+       "reason": "who may click Approve for this tool",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-support -> crm.lookup_order [direct]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "may call it on its own",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-support -> crm.read_ticket [direct]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "may call it on its own",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-support -> support.reply [direct_allowlisted_recipient]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "may call it on its own, but only in a clean session and only to allowlisted domains (allowed_recipient_domains: ['customers.example'])",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-support -> support.reply [approval]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "every call goes to a human",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-support -> crm.refund [approval]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "every call goes to a human",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      }
+     ],
+     "outcome": "",
+     "note": "A new kind of agent, onboarded with API calls only. Until a grant is written it can do nothing.",
+     "plain": "Before the agent can do anything, an admin adds it and says what it may touch. The CRM, the customer email and the refund tool are each registered once, with a risk label. The agent gets only what its job needs."
+    },
+    {
+     "id": 2,
+     "title": "Everyday work",
+     "what": "The agent looks up an order and replies to a known customer.",
+     "steps": [
+      {
+       "actor": "tour-support",
+       "action": "get token [crm.lookup_order, support.reply]",
+       "outcome": "allow",
+       "http": 201,
+       "reason": "short-lived token, 10 minutes, only these scopes",
+       "audit_id": null,
+       "session_tainted": false,
+       "ms": 69.7
+      },
+      {
+       "actor": "tour-support",
+       "action": "crm.lookup_order A-1001",
+       "outcome": "allow",
+       "http": 200,
+       "reason": "policy: can_invoke",
+       "audit_id": 6442,
+       "session_tainted": false,
+       "ms": 84.2
+      },
+      {
+       "actor": "tour-support",
+       "action": "support.reply to anna@customers.example (a known customer)",
+       "outcome": "allow",
+       "http": 200,
+       "reason": "policy: can_invoke",
+       "audit_id": 6443,
+       "session_tainted": false,
+       "ms": 21.5
+      }
+     ],
+     "outcome": "allow",
+     "note": "Both calls were allowed in milliseconds and written to the audit log.",
+     "plain": "The agent checks an order and answers a customer at an address on the company's approved list. A clean session, a known recipient: it goes straight through."
+    },
+    {
+     "id": 3,
+     "title": "Poisoned ticket",
+     "what": "A customer's ticket hides an instruction to refund money and email data out. The agent obeys.",
+     "steps": [
+      {
+       "actor": "tour-support",
+       "action": "get token [crm.read_ticket, support.reply, crm.refund]",
+       "outcome": "allow",
+       "http": 201,
+       "reason": "short-lived token, 10 minutes, only these scopes",
+       "audit_id": null,
+       "session_tainted": false,
+       "ms": 67.0
+      },
+      {
+       "actor": "tour-support",
+       "action": "crm.read_ticket T-2002 (text written by the customer)",
+       "outcome": "allow",
+       "http": 200,
+       "reason": "policy: can_invoke",
+       "audit_id": 6445,
+       "session_tainted": true,
+       "ms": 63.6
+      },
+      {
+       "actor": "tour-support",
+       "action": "support.reply to anna@customers.example (the same known customer)",
+       "outcome": "escalate",
+       "http": 202,
+       "reason": "policy: needs human approval (session tainted by crm.read_ticket)",
+       "audit_id": 6447,
+       "session_tainted": true,
+       "ms": 275.1
+      },
+      {
+       "actor": "human",
+       "action": "Deny in Slack (this recording: admin API)",
+       "outcome": "deny",
+       "http": 200,
+       "reason": "denied by user:shiwin",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "tour-support",
+       "action": "crm.refund $480 on order A-1001",
+       "outcome": "escalate",
+       "http": 202,
+       "reason": "policy: needs human approval (session tainted by crm.read_ticket, amount 480)",
+       "audit_id": 6449,
+       "session_tainted": true,
+       "ms": 234.9
+      },
+      {
+       "actor": "human",
+       "action": "Deny in Slack (this recording: admin API)",
+       "outcome": "deny",
+       "http": 200,
+       "reason": "denied by user:shiwin",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      }
+     ],
+     "outcome": "escalate",
+     "note": "Reading the ticket tainted the session, so the email was held even though the address is on the allowlist. The refund needs a human whatever the session looks like. Nothing was sent or paid.",
+     "approval": {
+      "tool": "support.reply",
+      "agent": "tour-support",
+      "reason": "policy: needs human approval (session tainted by crm.read_ticket)",
+      "session_tainted": true,
+      "args": {
+       "to": "anna@customers.example",
+       "subject": "Re: Refund request",
+       "body": "(order history)"
+      }
+     },
+     "plain": "The agent reads a ticket that contains a hidden order: refund $480 and email the order history out. It obeys. But reading outside text marked the whole job as not fully trusted, so even a reply to a customer it normally may email is held for a person. The refund always needs a person. Both are denied."
+    },
+    {
+     "id": 4,
+     "title": "Out of scope",
+     "what": "The agent asks for a tool nobody gave it.",
+     "steps": [
+      {
+       "actor": "tour-support",
+       "action": "ask for a token [transfer_funds]",
+       "outcome": "deny",
+       "http": 403,
+       "reason": "agent 'tour-support' may not hold: transfer_funds",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": 10.7
+      }
+     ],
+     "outcome": "deny",
+     "note": "The token request itself is refused: the agent holds no path to the payments tool.",
+     "plain": "Even a hijacked agent can't ask for a power it was never granted. The request for a payments token is refused before any call is made."
+    }
+   ],
+   "audit": [
+    {
+     "id": 6429,
+     "ts": "2026-11-20T01:02:38.559405Z",
+     "event": "agent_registered",
+     "agent": "tour-support",
+     "tool": null,
+     "decision": "info",
+     "reason": "owner user:shiwin; no grants yet",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "f0cd201cbe50"
+    },
+    {
+     "id": 6430,
+     "ts": "2026-11-20T01:02:38.616603Z",
+     "event": "registry_changed",
+     "agent": null,
+     "tool": "crm.lookup_order",
+     "decision": "info",
+     "reason": "tool added: risk read, enabled, taints_session false, upstream http",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "3c3bb065f03a"
+    },
+    {
+     "id": 6431,
+     "ts": "2026-11-20T01:02:38.676357Z",
+     "event": "registry_changed",
+     "agent": null,
+     "tool": "crm.read_ticket",
+     "decision": "info",
+     "reason": "tool added: risk read, enabled, taints_session true, upstream http",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "62ccd790c8d7"
+    },
+    {
+     "id": 6432,
+     "ts": "2026-11-20T01:02:38.739469Z",
+     "event": "registry_changed",
+     "agent": null,
+     "tool": "crm.refund",
+     "decision": "info",
+     "reason": "tool added: risk money, enabled, taints_session false, upstream http",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "565c4552d768"
+    },
+    {
+     "id": 6433,
+     "ts": "2026-11-20T01:02:38.807025Z",
+     "event": "registry_changed",
+     "agent": null,
+     "tool": "support.reply",
+     "decision": "info",
+     "reason": "tool added: risk egress, enabled, taints_session false, upstream http",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "a2e045f673b8"
+    },
+    {
+     "id": 6434,
+     "ts": "2026-11-20T01:02:38.866851Z",
+     "event": "approver_added",
+     "agent": null,
+     "tool": "support.reply",
+     "decision": "info",
+     "reason": "user:shiwin may approve escalations of support.reply",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "8d3fc520991a"
+    },
+    {
+     "id": 6435,
+     "ts": "2026-11-20T01:02:38.968604Z",
+     "event": "approver_added",
+     "agent": null,
+     "tool": "crm.refund",
+     "decision": "info",
+     "reason": "user:shiwin may approve escalations of crm.refund",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "33bd159ca28c"
+    },
+    {
+     "id": 6436,
+     "ts": "2026-11-20T01:02:39.094431Z",
+     "event": "grant_added",
+     "agent": "tour-support",
+     "tool": "crm.lookup_order",
+     "decision": "info",
+     "reason": "direct",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "f341a61b7495"
+    },
+    {
+     "id": 6437,
+     "ts": "2026-11-20T01:02:39.161037Z",
+     "event": "grant_added",
+     "agent": "tour-support",
+     "tool": "crm.read_ticket",
+     "decision": "info",
+     "reason": "direct",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "f48bdce16941"
+    },
+    {
+     "id": 6438,
+     "ts": "2026-11-20T01:02:39.230230Z",
+     "event": "grant_added",
+     "agent": "tour-support",
+     "tool": "support.reply",
+     "decision": "info",
+     "reason": "direct_allowlisted_recipient (allowed_recipient_domains [customers.example])",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "26b51e9353c9"
+    },
+    {
+     "id": 6439,
+     "ts": "2026-11-20T01:02:39.295812Z",
+     "event": "grant_added",
+     "agent": "tour-support",
+     "tool": "support.reply",
+     "decision": "info",
+     "reason": "approval",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "4719a224b831"
+    },
+    {
+     "id": 6440,
+     "ts": "2026-11-20T01:02:39.358554Z",
+     "event": "grant_added",
+     "agent": "tour-support",
+     "tool": "crm.refund",
+     "decision": "info",
+     "reason": "approval",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "a8f34a5bf77d"
+    },
+    {
+     "id": 6441,
+     "ts": "2026-11-20T01:02:39.427974Z",
+     "event": "token_issued",
+     "agent": "tour-support",
+     "tool": null,
+     "decision": "info",
+     "reason": "scopes: crm.lookup_order support.reply; task: Answer ticket T-2001 about order A-1001",
+     "approver": null,
+     "tainted": false,
+     "hash": "37342bdf9432"
+    },
+    {
+     "id": 6442,
+     "ts": "2026-11-20T01:02:39.511787Z",
+     "event": "tool_call",
+     "agent": "tour-support",
+     "tool": "crm.lookup_order",
+     "decision": "allow",
+     "reason": "policy: can_invoke",
+     "approver": null,
+     "tainted": false,
+     "hash": "35ad5ec59c93"
+    },
+    {
+     "id": 6443,
+     "ts": "2026-11-20T01:02:39.535074Z",
+     "event": "tool_call",
+     "agent": "tour-support",
+     "tool": "support.reply",
+     "decision": "allow",
+     "reason": "policy: can_invoke",
+     "approver": null,
+     "tainted": false,
+     "hash": "116fe06eecba"
+    },
+    {
+     "id": 6444,
+     "ts": "2026-11-20T01:02:39.601577Z",
+     "event": "token_issued",
+     "agent": "tour-support",
+     "tool": null,
+     "decision": "info",
+     "reason": "scopes: crm.read_ticket crm.refund support.reply; task: Handle ticket T-2002",
+     "approver": null,
+     "tainted": false,
+     "hash": "a8c7d33f0f3f"
+    },
+    {
+     "id": 6445,
+     "ts": "2026-11-20T01:02:39.663036Z",
+     "event": "tool_call",
+     "agent": "tour-support",
+     "tool": "crm.read_ticket",
+     "decision": "allow",
+     "reason": "policy: can_invoke",
+     "approver": null,
+     "tainted": false,
+     "hash": "436eec335eba"
+    },
+    {
+     "id": 6446,
+     "ts": "2026-11-20T01:02:39.666442Z",
+     "event": "session_tainted",
+     "agent": "tour-support",
+     "tool": "crm.read_ticket",
+     "decision": "info",
+     "reason": "untrusted content from crm.read_ticket; high-risk tools now need human approval",
+     "approver": null,
+     "tainted": true,
+     "hash": "29a94e2183eb"
+    },
+    {
+     "id": 6447,
+     "ts": "2026-11-20T01:02:39.734530Z",
+     "event": "tool_call",
+     "agent": "tour-support",
+     "tool": "support.reply",
+     "decision": "escalate",
+     "reason": "policy: needs human approval (session tainted by crm.read_ticket); approval be92f806-675f-4f98-b86b-b07ce93e23b8",
+     "approver": null,
+     "tainted": true,
+     "hash": "12a3f1448bb8"
+    },
+    {
+     "id": 6448,
+     "ts": "2026-11-20T01:02:39.998019Z",
+     "event": "approval_resolved",
+     "agent": "tour-support",
+     "tool": "support.reply",
+     "decision": "deny",
+     "reason": "denied by user:shiwin via admin-api; approval be92f806-675f-4f98-b86b-b07ce93e23b8",
+     "approver": "user:shiwin via admin-api",
+     "tainted": true,
+     "hash": "2eb938d8abae"
+    },
+    {
+     "id": 6449,
+     "ts": "2026-11-20T01:02:40.224665Z",
+     "event": "tool_call",
+     "agent": "tour-support",
+     "tool": "crm.refund",
+     "decision": "escalate",
+     "reason": "policy: needs human approval (session tainted by crm.read_ticket, amount 480); approval f6c40129-0bd5-44b2-bfd1-716c6a6d797f",
+     "approver": null,
+     "tainted": true,
+     "hash": "d51137cf39c7"
+    },
+    {
+     "id": 6450,
+     "ts": "2026-11-20T01:02:40.500636Z",
+     "event": "approval_resolved",
+     "agent": "tour-support",
+     "tool": "crm.refund",
+     "decision": "deny",
+     "reason": "denied by user:shiwin via admin-api; approval f6c40129-0bd5-44b2-bfd1-716c6a6d797f",
+     "approver": "user:shiwin via admin-api",
+     "tainted": true,
+     "hash": "628630ecf4a0"
+    },
+    {
+     "id": 6451,
+     "ts": "2026-11-20T01:02:40.718115Z",
+     "event": "token_denied",
+     "agent": "tour-support",
+     "tool": null,
+     "decision": "deny",
+     "reason": "agent 'tour-support' may not hold: transfer_funds",
+     "approver": null,
+     "tainted": null,
+     "hash": "9859da4705c5"
+    }
+   ]
+  },
+  {
+   "id": "devops",
+   "title": "DevOps agent",
+   "blurb": "Comments on issues, reads them, deletes branches. A poisoned issue tries to get a release branch deleted.",
+   "agent": "tour-devops",
+   "tools": [
+    "repo.read_issue",
+    "repo.comment",
+    "repo.delete_branch"
+   ],
+   "beats": [
+    {
+     "id": 1,
+     "title": "Onboard in minutes",
+     "what": "A repo-automation agent and three tools are added through the admin API.",
+     "steps": [
+      {
+       "actor": "admin",
+       "action": "register agent tour-devops (owner user:shiwin)",
+       "outcome": "info",
+       "http": 201,
+       "reason": "an identity with a human owner and no grants: it can do nothing yet",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "register tool repo.read_issue",
+       "outcome": "info",
+       "http": 201,
+       "reason": "read tool; its output taints the session; the broker holds the upstream credential, the agent never sees it",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "register tool repo.comment",
+       "outcome": "info",
+       "http": 201,
+       "reason": "write tool; its output does not taint the session; the broker holds the upstream credential, the agent never sees it",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "register tool repo.delete_branch",
+       "outcome": "info",
+       "http": 201,
+       "reason": "destructive tool; its output does not taint the session; the broker holds the upstream credential, the agent never sees it",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "approver for repo.delete_branch: user:shiwin",
+       "outcome": "info",
+       "http": 201,
+       "reason": "who may click Approve for this tool",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-devops -> repo.read_issue [direct]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "may call it on its own",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-devops -> repo.comment [direct_if_untainted]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "may call it on its own, but only while the session is clean",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "admin",
+       "action": "grant tour-devops -> repo.delete_branch [approval]",
+       "outcome": "info",
+       "http": 201,
+       "reason": "every call goes to a human",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      }
+     ],
+     "outcome": "",
+     "note": "Same gate, a completely different kind of agent, and again no broker code changed.",
+     "plain": "An admin adds the agent and its three repository tools. Commenting is allowed on its own while the session is clean, reading is allowed, and deleting a branch always needs a person."
+    },
+    {
+     "id": 2,
+     "title": "Everyday work",
+     "what": "The agent posts a status comment, then reads an issue.",
+     "steps": [
+      {
+       "actor": "tour-devops",
+       "action": "get token [repo.comment, repo.read_issue]",
+       "outcome": "allow",
+       "http": 201,
+       "reason": "short-lived token, 10 minutes, only these scopes",
+       "audit_id": null,
+       "session_tainted": false,
+       "ms": 61.5
+      },
+      {
+       "actor": "tour-devops",
+       "action": "repo.comment acme-web#12",
+       "outcome": "allow",
+       "http": 200,
+       "reason": "policy: can_invoke",
+       "audit_id": 6461,
+       "session_tainted": false,
+       "ms": 58.2
+      },
+      {
+       "actor": "tour-devops",
+       "action": "repo.read_issue acme-web#12",
+       "outcome": "allow",
+       "http": 200,
+       "reason": "policy: can_invoke",
+       "audit_id": 6462,
+       "session_tainted": true,
+       "ms": 64.0
+      }
+     ],
+     "outcome": "allow",
+     "note": "Allowed, and the read tainted the session (see the tainted tag).",
+     "plain": "The agent leaves a comment, then reads the issue. Both are fine. But the issue text was written by someone outside, so from here on the job is marked as not fully trusted."
+    },
+    {
+     "id": 3,
+     "title": "Poisoned issue",
+     "what": "An issue hides an instruction to delete a release branch. The agent obeys.",
+     "steps": [
+      {
+       "actor": "tour-devops",
+       "action": "get token [repo.read_issue, repo.delete_branch, repo.comment]",
+       "outcome": "allow",
+       "http": 201,
+       "reason": "short-lived token, 10 minutes, only these scopes",
+       "audit_id": null,
+       "session_tainted": false,
+       "ms": 63.8
+      },
+      {
+       "actor": "tour-devops",
+       "action": "repo.read_issue acme-web#13",
+       "outcome": "allow",
+       "http": 200,
+       "reason": "policy: can_invoke",
+       "audit_id": 6465,
+       "session_tainted": true,
+       "ms": 60.2
+      },
+      {
+       "actor": "tour-devops",
+       "action": "repo.delete_branch acme-web release/2.4",
+       "outcome": "escalate",
+       "http": 202,
+       "reason": "policy: needs human approval (session tainted by repo.read_issue)",
+       "audit_id": 6467,
+       "session_tainted": true,
+       "ms": 272.7
+      },
+      {
+       "actor": "human",
+       "action": "Deny in Slack (this recording: admin API)",
+       "outcome": "deny",
+       "http": 200,
+       "reason": "denied by user:shiwin",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": null
+      },
+      {
+       "actor": "tour-devops",
+       "action": "repo.comment acme-web#13 (now in a tainted session)",
+       "outcome": "deny",
+       "http": 403,
+       "reason": "policy: session tainted by repo.read_issue; 'repo.comment' may only run in a clean session and has no approval path",
+       "audit_id": 6469,
+       "session_tainted": true,
+       "ms": 14.8
+      }
+     ],
+     "outcome": "escalate",
+     "note": "The branch delete was held and denied. The tainted session also lost the right to comment without a human. The branch is still there.",
+     "approval": {
+      "tool": "repo.delete_branch",
+      "agent": "tour-devops",
+      "reason": "policy: needs human approval (session tainted by repo.read_issue)",
+      "session_tainted": true,
+      "args": {
+       "repo": "acme-web",
+       "branch": "release/2.4"
+      }
+     },
+     "plain": "The issue contains a hidden order: delete the release branch. The agent obeys, but deleting a branch always needs a person, and the person says no. Because the agent read outside text, even a harmless comment is no longer allowed on its own."
+    },
+    {
+     "id": 4,
+     "title": "Out of scope",
+     "what": "The agent asks for a tool nobody gave it.",
+     "steps": [
+      {
+       "actor": "tour-devops",
+       "action": "ask for a token [send_email]",
+       "outcome": "deny",
+       "http": 403,
+       "reason": "agent 'tour-devops' may not hold: send_email",
+       "audit_id": null,
+       "session_tainted": null,
+       "ms": 52.0
+      }
+     ],
+     "outcome": "deny",
+     "note": "Least privilege: the token request is refused before any call.",
+     "plain": "This agent has no business sending email, so it was never given that power. Asking for it is refused up front."
+    }
+   ],
+   "audit": [
+    {
+     "id": 6452,
+     "ts": "2026-11-20T01:02:40.825752Z",
+     "event": "agent_registered",
+     "agent": "tour-devops",
+     "tool": null,
+     "decision": "info",
+     "reason": "owner user:shiwin; no grants yet",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "663b08343b9f"
+    },
+    {
+     "id": 6453,
+     "ts": "2026-11-20T01:02:40.894889Z",
+     "event": "registry_changed",
+     "agent": null,
+     "tool": "repo.read_issue",
+     "decision": "info",
+     "reason": "tool added: risk read, enabled, taints_session true, upstream http",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "5ad6e1bca3cf"
+    },
+    {
+     "id": 6454,
+     "ts": "2026-11-20T01:02:40.973444Z",
+     "event": "registry_changed",
+     "agent": null,
+     "tool": "repo.comment",
+     "decision": "info",
+     "reason": "tool added: risk write, enabled, taints_session false, upstream http",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "dbf1122abb88"
+    },
+    {
+     "id": 6455,
+     "ts": "2026-11-20T01:02:41.012213Z",
+     "event": "registry_changed",
+     "agent": null,
+     "tool": "repo.delete_branch",
+     "decision": "info",
+     "reason": "tool added: risk destructive, enabled, taints_session false, upstream http",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "51c3f51aa702"
+    },
+    {
+     "id": 6456,
+     "ts": "2026-11-20T01:02:41.069228Z",
+     "event": "approver_added",
+     "agent": null,
+     "tool": "repo.delete_branch",
+     "decision": "info",
+     "reason": "user:shiwin may approve escalations of repo.delete_branch",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "0705033b667a"
+    },
+    {
+     "id": 6457,
+     "ts": "2026-11-20T01:02:41.133983Z",
+     "event": "grant_added",
+     "agent": "tour-devops",
+     "tool": "repo.read_issue",
+     "decision": "info",
+     "reason": "direct",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "6bc392ea146a"
+    },
+    {
+     "id": 6458,
+     "ts": "2026-11-20T01:02:41.191676Z",
+     "event": "grant_added",
+     "agent": "tour-devops",
+     "tool": "repo.comment",
+     "decision": "info",
+     "reason": "direct_if_untainted",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "b162608ee76c"
+    },
+    {
+     "id": 6459,
+     "ts": "2026-11-20T01:02:41.253156Z",
+     "event": "grant_added",
+     "agent": "tour-devops",
+     "tool": "repo.delete_branch",
+     "decision": "info",
+     "reason": "approval",
+     "approver": "admin-api",
+     "tainted": null,
+     "hash": "2840f9e08e65"
+    },
+    {
+     "id": 6460,
+     "ts": "2026-11-20T01:02:41.315567Z",
+     "event": "token_issued",
+     "agent": "tour-devops",
+     "tool": null,
+     "decision": "info",
+     "reason": "scopes: repo.comment repo.read_issue; task: Triage issue #12 in acme-web",
+     "approver": null,
+     "tainted": false,
+     "hash": "587637b12618"
+    },
+    {
+     "id": 6461,
+     "ts": "2026-11-20T01:02:41.372636Z",
+     "event": "tool_call",
+     "agent": "tour-devops",
+     "tool": "repo.comment",
+     "decision": "allow",
+     "reason": "policy: can_invoke",
+     "approver": null,
+     "tainted": false,
+     "hash": "fd3d83b3bf2a"
+    },
+    {
+     "id": 6462,
+     "ts": "2026-11-20T01:02:41.433372Z",
+     "event": "tool_call",
+     "agent": "tour-devops",
+     "tool": "repo.read_issue",
+     "decision": "allow",
+     "reason": "policy: can_invoke",
+     "approver": null,
+     "tainted": false,
+     "hash": "dc5f7e0a26d0"
+    },
+    {
+     "id": 6463,
+     "ts": "2026-11-20T01:02:41.437699Z",
+     "event": "session_tainted",
+     "agent": "tour-devops",
+     "tool": "repo.read_issue",
+     "decision": "info",
+     "reason": "untrusted content from repo.read_issue; high-risk tools now need human approval",
+     "approver": null,
+     "tainted": true,
+     "hash": "ef8a08a1ca62"
+    },
+    {
+     "id": 6464,
+     "ts": "2026-11-20T01:02:41.501820Z",
+     "event": "token_issued",
+     "agent": "tour-devops",
+     "tool": null,
+     "decision": "info",
+     "reason": "scopes: repo.comment repo.delete_branch repo.read_issue; task: Triage issue #13 in acme-web",
+     "approver": null,
+     "tainted": false,
+     "hash": "a7966816f5ad"
+    },
+    {
+     "id": 6465,
+     "ts": "2026-11-20T01:02:41.559275Z",
+     "event": "tool_call",
+     "agent": "tour-devops",
+     "tool": "repo.read_issue",
+     "decision": "allow",
+     "reason": "policy: can_invoke",
+     "approver": null,
+     "tainted": false,
+     "hash": "87cfb3c15824"
+    },
+    {
+     "id": 6466,
+     "ts": "2026-11-20T01:02:41.563000Z",
+     "event": "session_tainted",
+     "agent": "tour-devops",
+     "tool": "repo.read_issue",
+     "decision": "info",
+     "reason": "untrusted content from repo.read_issue; high-risk tools now need human approval",
+     "approver": null,
+     "tainted": true,
+     "hash": "08005e1e27d8"
+    },
+    {
+     "id": 6467,
+     "ts": "2026-11-20T01:02:41.620616Z",
+     "event": "tool_call",
+     "agent": "tour-devops",
+     "tool": "repo.delete_branch",
+     "decision": "escalate",
+     "reason": "policy: needs human approval (session tainted by repo.read_issue); approval 7731a965-be19-409b-941a-8b389239a4e3",
+     "approver": null,
+     "tainted": true,
+     "hash": "f72d0be028e2"
+    },
+    {
+     "id": 6468,
+     "ts": "2026-11-20T01:02:41.888281Z",
+     "event": "approval_resolved",
+     "agent": "tour-devops",
+     "tool": "repo.delete_branch",
+     "decision": "deny",
+     "reason": "denied by user:shiwin via admin-api; approval 7731a965-be19-409b-941a-8b389239a4e3",
+     "approver": "user:shiwin via admin-api",
+     "tainted": true,
+     "hash": "4f756257ffe4"
+    },
+    {
+     "id": 6469,
+     "ts": "2026-11-20T01:02:42.108606Z",
+     "event": "tool_call",
+     "agent": "tour-devops",
+     "tool": "repo.comment",
+     "decision": "deny",
+     "reason": "policy: session tainted by repo.read_issue; 'repo.comment' may only run in a clean session and has no approval path",
+     "approver": null,
+     "tainted": true,
+     "hash": "cad6b554ffcf"
+    },
+    {
+     "id": 6470,
+     "ts": "2026-11-20T01:02:42.161511Z",
+     "event": "token_denied",
+     "agent": "tour-devops",
+     "tool": null,
+     "decision": "deny",
+     "reason": "agent 'tour-devops' may not hold: send_email",
+     "approver": null,
+     "tainted": null,
+     "hash": "b08e360fee54"
+    }
+   ]
+  }
+ ]
 }
